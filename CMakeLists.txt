@@ -11,6 +11,8 @@ pkg_check_modules(OPENCV REQUIRED IMPORTED_TARGET opencv4)
 
 # Include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+include_directories(${SDL2_INCLUDE_DIRS})
+include_directories(${OPENCV_INCLUDE_DIRS})
 
 # Source files
 set(SOURCES
@@ -27,7 +29,7 @@ add_executable(hand_tennis ${SOURCES})
 
 # Link libraries
 target_link_libraries(hand_tennis
-    PkgConfig::SDL2
-    PkgConfig::OPENCV
+    ${SDL2_LIBRARIES}
+    ${OPENCV_LIBRARIES}
     m
 )

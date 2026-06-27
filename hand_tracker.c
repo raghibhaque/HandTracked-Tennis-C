@@ -80,7 +80,7 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
     
     // Find largest contour (likely the hand)
     for (CvSeq *seq = contours; seq; seq = seq->h_next) {
-        double area = cvContourArea(seq, cvWholeSeq(seq), 0);
+        double area = cvContourArea(seq, CV_WHOLE_SEQ, 0);
         if (area > max_area) {
             max_area = area;
             largest_contour = seq;

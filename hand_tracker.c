@@ -3,6 +3,15 @@
 #include <stdlib.h>
 #include <math.h>
 
+static CvCapture* open_camera_index(int camera_index) {
+    CvCapture *capture = cvCaptureFromCAM(camera_index);
+    if (capture) {
+        return capture;
+    }
+
+    return NULL;
+}
+
 // Skin color detection thresholds (HSV space)
 #define SKIN_H_MIN 0
 #define SKIN_H_MAX 20
@@ -13,11 +22,28 @@
 
 HandTracker* hand_tracker_init(void) {
     HandTracker *tracker = (HandTracker *)malloc(sizeof(HandTracker));
-    
-    // Initialize video capture from default camera
-    tracker->capture = cvCaptureFromCAM(0);
+    if (!tracker) {
+        fprintf(stderr, "Error: Out of memory\n");
+        return NULL;
+    }
+
+    tracker->capture = NULL;
+    tracker->frame = NULL;
+    tracker->hsv = NULL;
+    tracker->mask = NULL;
+    tracker->eroded = NULL;
+    tracker->dilated = NULL;
+
+    for (int camera_index = 0; camera_index < 10; camera_index++) {
+        tracker->capture = open_camera_index(camera_index);
+        if (tracker->capture) {
+            printf("Using camera index %d\n", camera_index);
+            break;
+        }
+    }
+
     if (!tracker->capture) {
-        fprintf(stderr, "Error: Could not open camera\n");
+        fprintf(stderr, "Error: Could not open any camera index 0-9\n");
         free(tracker);
         return NULL;
     }

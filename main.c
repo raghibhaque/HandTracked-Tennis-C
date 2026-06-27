@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <time.h>
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_ttf.h>
 #include "game.h"
 #include "hand_tracker.h"
 
@@ -37,9 +38,54 @@ void print_usage(void) {
 typedef struct {
     SDL_Window *window;
     SDL_Renderer *renderer;
+    TTF_Font *title_font;
+    TTF_Font *body_font;
+    TTF_Font *button_font;
     bool retry_clicked;
     bool quit_clicked;
 } CameraPrompt;
+
+static const char *PROMPT_FONT_PATH = "C:\\Windows\\Fonts\\segoeui.ttf";
+
+static SDL_Color rgb(Uint8 red, Uint8 green, Uint8 blue) {
+    SDL_Color color = {red, green, blue, 255};
+    return color;
+}
+
+static void draw_filled_round_rect(SDL_Renderer *renderer, SDL_Rect rect, SDL_Color color) {
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    SDL_RenderFillRect(renderer, &rect);
+}
+
+static void draw_text(SDL_Renderer *renderer, TTF_Font *font, const char *text, int x, int y, SDL_Color color) {
+    SDL_Surface *surface = TTF_RenderUTF8_Blended(font, text, color);
+    if (!surface) {
+        return;
+    }
+
+    SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, surface);
+    if (!texture) {
+        SDL_FreeSurface(surface);
+        return;
+    }
+
+    SDL_Rect dst = {x, y, surface->w, surface->h};
+    SDL_RenderCopy(renderer, texture, NULL, &dst);
+    SDL_DestroyTexture(texture);
+    SDL_FreeSurface(surface);
+}
+
+static void draw_text_centered(SDL_Renderer *renderer, TTF_Font *font, const char *text, SDL_Rect bounds, SDL_Color color) {
+    int text_width = 0;
+    int text_height = 0;
+    if (TTF_SizeUTF8(font, text, &text_width, &text_height) != 0) {
+        return;
+    }
+
+    int x = bounds.x + (bounds.w - text_width) / 2;
+    int y = bounds.y + (bounds.h - text_height) / 2;
+    draw_text(renderer, font, text, x, y, color);
+}
 
 CameraPrompt* camera_prompt_init(void) {
     CameraPrompt *prompt = (CameraPrompt *)malloc(sizeof(CameraPrompt));
@@ -67,6 +113,19 @@ CameraPrompt* camera_prompt_init(void) {
         return NULL;
     }
 
+    prompt->title_font = TTF_OpenFont(PROMPT_FONT_PATH, 30);
+    prompt->body_font = TTF_OpenFont(PROMPT_FONT_PATH, 18);
+    prompt->button_font = TTF_OpenFont(PROMPT_FONT_PATH, 20);
+    if (!prompt->title_font || !prompt->body_font || !prompt->button_font) {
+        if (prompt->title_font) TTF_CloseFont(prompt->title_font);
+        if (prompt->body_font) TTF_CloseFont(prompt->body_font);
+        if (prompt->button_font) TTF_CloseFont(prompt->button_font);
+        SDL_DestroyRenderer(prompt->renderer);
+        SDL_DestroyWindow(prompt->window);
+        free(prompt);
+        return NULL;
+    }
+
     SDL_SetRenderDrawBlendMode(prompt->renderer, SDL_BLENDMODE_BLEND);
     prompt->retry_clicked = false;
     prompt->quit_clicked = false;
@@ -76,42 +135,65 @@ CameraPrompt* camera_prompt_init(void) {
 void camera_prompt_cleanup(CameraPrompt *prompt) {
     if (!prompt) return;
 
+    if (prompt->title_font) TTF_CloseFont(prompt->title_font);
+    if (prompt->body_font) TTF_CloseFont(prompt->body_font);
+    if (prompt->button_font) TTF_CloseFont(prompt->button_font);
     if (prompt->renderer) SDL_DestroyRenderer(prompt->renderer);
     if (prompt->window) SDL_DestroyWindow(prompt->window);
     free(prompt);
 }
 
 void camera_prompt_draw(CameraPrompt *prompt) {
-    SDL_SetRenderDrawColor(prompt->renderer, 18, 22, 35, 255);
+    SDL_SetRenderDrawColor(prompt->renderer, 13, 18, 30, 255);
     SDL_RenderClear(prompt->renderer);
 
-    SDL_SetRenderDrawColor(prompt->renderer, 40, 55, 90, 255);
-    SDL_Rect panel = {40, 40, 640, 220};
-    SDL_RenderFillRect(prompt->renderer, &panel);
+    SDL_Rect glow = {48, 36, 624, 286};
+    draw_filled_round_rect(prompt->renderer, glow, rgb(24, 30, 48));
 
-    SDL_SetRenderDrawColor(prompt->renderer, 120, 180, 255, 255);
-    SDL_Rect title = {40, 40, 640, 44};
-    SDL_RenderFillRect(prompt->renderer, &title);
+    SDL_Rect top_bar = {48, 36, 624, 60};
+    draw_filled_round_rect(prompt->renderer, top_bar, rgb(92, 149, 230));
 
-    SDL_SetRenderDrawColor(prompt->renderer, 255, 220, 120, 255);
-    SDL_Rect camIcon = {78, 112, 72, 48};
-    SDL_RenderFillRect(prompt->renderer, &camIcon);
+    SDL_Rect content = {48, 96, 624, 226};
+    draw_filled_round_rect(prompt->renderer, content, rgb(34, 43, 70));
 
-    SDL_SetRenderDrawColor(prompt->renderer, 235, 235, 235, 255);
-    SDL_Rect body = {170, 112, 430, 18};
-    SDL_RenderFillRect(prompt->renderer, &body);
-    SDL_Rect line2 = {170, 142, 350, 18};
-    SDL_RenderFillRect(prompt->renderer, &line2);
-    SDL_Rect line3 = {170, 172, 400, 18};
-    SDL_RenderFillRect(prompt->renderer, &line3);
+    SDL_Rect badge = {76, 136, 72, 72};
+    draw_filled_round_rect(prompt->renderer, badge, rgb(255, 208, 92));
 
-    SDL_SetRenderDrawColor(prompt->renderer, 70, 200, 120, 255);
-    SDL_Rect retryButton = {160, 300, 160, 54};
-    SDL_RenderFillRect(prompt->renderer, &retryButton);
+    SDL_SetRenderDrawColor(prompt->renderer, 255, 235, 170, 255);
+    SDL_Rect lens = {98, 158, 28, 28};
+    SDL_RenderFillRect(prompt->renderer, &lens);
+    SDL_Rect lens2 = {126, 170, 18, 6};
+    SDL_RenderFillRect(prompt->renderer, &lens2);
 
-    SDL_SetRenderDrawColor(prompt->renderer, 220, 80, 80, 255);
-    SDL_Rect quitButton = {400, 300, 160, 54};
-    SDL_RenderFillRect(prompt->renderer, &quitButton);
+    SDL_Color text_primary = rgb(245, 247, 255);
+    SDL_Color text_secondary = rgb(185, 195, 220);
+    SDL_Color text_muted = rgb(140, 154, 185);
+    SDL_Color button_text = rgb(255, 255, 255);
+
+    draw_text(prompt->renderer, prompt->title_font, "Camera Access", 82, 47, rgb(16, 24, 40));
+    draw_text(prompt->renderer, prompt->title_font, "Allow webcam access to continue", 170, 130, text_primary);
+    draw_text(prompt->renderer, prompt->body_font, "Windows may ask for permission to use your camera.", 170, 170, text_secondary);
+    draw_text(prompt->renderer, prompt->body_font, "Choose Allow, then press Retry to reopen the webcam.", 170, 198, text_secondary);
+    draw_text(prompt->renderer, prompt->body_font, "Tip: also check Settings > Privacy & security > Camera.", 170, 226, text_muted);
+
+    SDL_Rect retryButton = {160, 316, 176, 54};
+    SDL_Rect quitButton = {384, 316, 176, 54};
+    draw_filled_round_rect(prompt->renderer, retryButton, rgb(72, 197, 127));
+    draw_filled_round_rect(prompt->renderer, quitButton, rgb(229, 94, 94));
+
+    SDL_Rect retryGlow = {160, 316, 176, 54};
+    SDL_Rect quitGlow = {384, 316, 176, 54};
+    SDL_SetRenderDrawColor(prompt->renderer, 255, 255, 255, 30);
+    SDL_RenderDrawRect(prompt->renderer, &retryGlow);
+    SDL_RenderDrawRect(prompt->renderer, &quitGlow);
+
+    SDL_Rect retryTextBox = {160, 316, 176, 54};
+    SDL_Rect quitTextBox = {384, 316, 176, 54};
+    draw_text_centered(prompt->renderer, prompt->button_font, "Retry", retryTextBox, button_text);
+    draw_text_centered(prompt->renderer, prompt->button_font, "Quit", quitTextBox, button_text);
+
+    draw_text(prompt->renderer, prompt->body_font, "Press R or click Retry", 256, 382, text_muted);
+    draw_text(prompt->renderer, prompt->body_font, "Press Esc or click Quit", 456, 382, text_muted);
 
     SDL_RenderPresent(prompt->renderer);
 }
@@ -163,6 +245,11 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "SDL initialization failed: %s\n", SDL_GetError());
         return 1;
     }
+    if (TTF_Init() < 0) {
+        fprintf(stderr, "SDL_ttf initialization failed: %s\n", TTF_GetError());
+        SDL_Quit();
+        return 1;
+    }
     
     print_usage();
     
@@ -180,6 +267,7 @@ int main(int argc, char *argv[]) {
     CameraPrompt *camera_prompt = camera_prompt_init();
     if (!camera_prompt) {
         fprintf(stderr, "Failed to open camera prompt window\n");
+        TTF_Quit();
         SDL_Quit();
         return 1;
     }
@@ -193,6 +281,7 @@ int main(int argc, char *argv[]) {
     while (!camera_ready) {
         if (!camera_prompt_run(camera_prompt)) {
             camera_prompt_cleanup(camera_prompt);
+            TTF_Quit();
             SDL_Quit();
             return 1;
         }
@@ -215,6 +304,7 @@ int main(int argc, char *argv[]) {
     if (!renderer) {
         fprintf(stderr, "Failed to initialize renderer\n");
         hand_tracker_cleanup(hand_tracker);
+        TTF_Quit();
         SDL_Quit();
         return 1;
     }
@@ -226,6 +316,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Failed to initialize game\n");
         rendering_cleanup(renderer);
         hand_tracker_cleanup(hand_tracker);
+        TTF_Quit();
         SDL_Quit();
         return 1;
     }
@@ -304,6 +395,7 @@ int main(int argc, char *argv[]) {
     game_cleanup(game_state);
     rendering_cleanup(renderer);
     hand_tracker_cleanup(hand_tracker);
+    TTF_Quit();
     SDL_Quit();
     printf("✓ Goodbye!\n");
     

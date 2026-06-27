@@ -7,6 +7,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -Wall -Wextra")
 # Find required packages
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+pkg_check_modules(SDL2_TTF REQUIRED IMPORTED_TARGET SDL2_ttf)
 pkg_check_modules(OPENCV REQUIRED IMPORTED_TARGET opencv4)
 
 # Include directories
@@ -30,6 +31,7 @@ add_executable(hand_tennis ${SOURCES})
 # Link libraries
 target_link_libraries(hand_tennis
     ${SDL2_LIBRARIES}
+    ${SDL2_TTF_LIBRARIES}
     ${OPENCV_LIBRARIES}
     m
 )

@@ -34,7 +34,7 @@ HandTracker* hand_tracker_init(void) {
     tracker->eroded = NULL;
     tracker->dilated = NULL;
 
-    for (int camera_index = 0; camera_index < 10; camera_index++) {
+    for (int camera_index = 0; camera_index < 100; camera_index++) {
         tracker->capture = open_camera_index(camera_index);
         if (tracker->capture) {
             printf("Using camera index %d\n", camera_index);

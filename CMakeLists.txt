@@ -32,6 +32,8 @@ add_executable(hand_tennis ${SOURCES})
 target_link_libraries(hand_tennis
     ${SDL2_LIBRARIES}
     ${SDL2_TTF_LIBRARIES}
-    ${OPENCV_LIBRARIES}
+    opencv_core
+    opencv_imgproc
+    opencv_videoio
     m
 )

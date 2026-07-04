@@ -2,6 +2,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 static CvCapture* open_camera_index(int camera_index) {
     CvCapture *capture = cvCaptureFromCAM(camera_index);
@@ -15,7 +18,9 @@ static CvCapture* open_camera_index(int camera_index) {
             return capture;
         }
 
-        cvWaitKey(50);
+#ifdef _WIN32
+        Sleep(50);
+#endif
     }
 
     cvReleaseCapture(&capture);

@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.10)
-project(HandTennisGame C)
+project(HandTennisGame C CXX)
 
 set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -Wall -Wextra")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -Wall -Wextra")
 
 # Find required packages
 find_package(PkgConfig REQUIRED)
@@ -18,7 +21,7 @@ include_directories(${OPENCV_INCLUDE_DIRS})
 # Source files
 set(SOURCES
     main.c
-    hand_tracker.c
+    hand_tracker.cpp
     game.c
     physics.c
     ai_opponent.c

@@ -5,10 +5,18 @@
 
 static CvCapture* open_camera_index(int camera_index) {
     CvCapture *capture = cvCaptureFromCAM(camera_index);
-    if (capture) {
-        return capture;
+    if (!capture) {
+        return NULL;
     }
 
+    // Give the device a few chances to produce a real frame before accepting it.
+    for (int attempt = 0; attempt < 30; attempt++) {
+        if (cvQueryFrame(capture)) {
+            return capture;
+        }
+    }
+
+    cvReleaseCapture(&capture);
     return NULL;
 }
 
@@ -34,11 +42,22 @@ HandTracker* hand_tracker_init(void) {
     tracker->eroded = NULL;
     tracker->dilated = NULL;
 
-    for (int camera_index = 0; camera_index < 100; camera_index++) {
+    const char *camera_index_env = getenv("HAND_TENNIS_CAMERA_INDEX");
+    if (camera_index_env && *camera_index_env) {
+        int camera_index = atoi(camera_index_env);
         tracker->capture = open_camera_index(camera_index);
         if (tracker->capture) {
-            printf("Using camera index %d\n", camera_index);
-            break;
+            printf("Using camera index %d (HAND_TENNIS_CAMERA_INDEX)\n", camera_index);
+        }
+    }
+
+    if (!tracker->capture) {
+        for (int camera_index = 0; camera_index < 10; camera_index++) {
+            tracker->capture = open_camera_index(camera_index);
+            if (tracker->capture) {
+                printf("Using camera index %d\n", camera_index);
+                break;
+            }
         }
     }
 

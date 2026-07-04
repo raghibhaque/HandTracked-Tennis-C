@@ -40,8 +40,8 @@ GameState* game_init(Difficulty difficulty) {
     state->hand.x = 0;
     state->hand.y = 0;
     state->hand.detected = false;
-    state->hand.smoothed_x = state->player.x + state->player.width / 2;
-    state->hand.smoothed_y = state->player.y + state->player.height / 2;
+    state->hand.smoothed_x = 50.0f;
+    state->hand.smoothed_y = 50.0f;
     state->hand.tracking_confidence = 0;
     
     // Initialize ball
@@ -81,8 +81,7 @@ void game_update(GameState *state, Hand *hand) {
         state->hand.tracking_confidence = (state->hand.tracking_confidence - 1) < 0 ? 0 : state->hand.tracking_confidence - 1;
     }
     
-    // Map hand position to paddle (camera is on right side, controls player paddle)
-    // Normalize from camera frame (0-100) to game coordinates
+    // Map normalized camera position (0-100) to game coordinates.
     if (state->hand.tracking_confidence > 30) {
         float game_y = COURT_Y + (state->hand.smoothed_y / 100.0f) * COURT_HEIGHT;
         

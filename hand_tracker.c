@@ -9,11 +9,13 @@ static CvCapture* open_camera_index(int camera_index) {
         return NULL;
     }
 
-    // Give the device a few chances to produce a real frame before accepting it.
-    for (int attempt = 0; attempt < 30; attempt++) {
+    // Give the device time to initialize before accepting it.
+    for (int attempt = 0; attempt < 50; attempt++) {
         if (cvQueryFrame(capture)) {
             return capture;
         }
+
+        cvWaitKey(50);
     }
 
     cvReleaseCapture(&capture);

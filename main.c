@@ -21,12 +21,15 @@ const char* ai_get_difficulty_name(Difficulty difficulty);
 
 void print_usage(void) {
     printf("\n=== Hand Tennis Game ===\n");
-    printf("Usage: hand_tennis [difficulty]\n\n");
+    printf("Usage: hand_tennis [difficulty] [fps]\n\n");
     printf("Difficulty levels:\n");
     printf("  0 = Easy (slow opponent, forgiving)\n");
     printf("  1 = Medium (balanced gameplay)\n");
     printf("  2 = Hard (fast, predictive)\n");
     printf("  3 = Extreme (godlike AI)\n\n");
+    printf("FPS caps:\n");
+    printf("  30 = lower CPU usage\n");
+    printf("  60 = smoother motion (default)\n\n");
     printf("Controls:\n");
     printf("  - Position your hand in front of the camera\n");
     printf("  - Move your hand up/down to move the paddle\n");
@@ -239,6 +242,15 @@ Difficulty parse_difficulty(const char *arg) {
     return (Difficulty)level;
 }
 
+static int parse_frame_cap(const char *arg) {
+    int cap = atoi(arg);
+    if (cap != 30 && cap != 60) {
+        fprintf(stderr, "Invalid FPS cap: %d. Using 60 FPS.\n", cap);
+        return 60;
+    }
+    return cap;
+}
+
 int main(int argc, char *argv[]) {
     srand((unsigned int)time(NULL));
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
@@ -255,14 +267,19 @@ int main(int argc, char *argv[]) {
     
     // Parse difficulty from command line
     Difficulty difficulty = DIFFICULTY_MEDIUM;
+    int frame_cap = 60;
     if (argc > 1) {
         difficulty = parse_difficulty(argv[1]);
+    }
+    if (argc > 2) {
+        frame_cap = parse_frame_cap(argv[2]);
     }
     
     printf("Starting Hand Tennis - Difficulty: %s\n\n", 
            difficulty == DIFFICULTY_EASY ? "Easy" :
            difficulty == DIFFICULTY_MEDIUM ? "Medium" :
            difficulty == DIFFICULTY_HARD ? "Hard" : "Extreme");
+    printf("Frame cap: %d FPS\n\n", frame_cap);
 
     CameraPrompt *camera_prompt = camera_prompt_init();
     if (!camera_prompt) {
@@ -331,15 +348,16 @@ int main(int argc, char *argv[]) {
     uint32_t frame_time = 0;
     uint32_t frame_count_fps = 0;
     uint32_t fps_timer = 0;
+    uint32_t target_frame_ms = (frame_cap == 30) ? 33u : 16u;
     
     while (running) {
         uint32_t current_time = SDL_GetTicks();
         frame_time = current_time - last_time;
         last_time = current_time;
         
-        // Cap at 60 FPS
-        if (frame_time < 16) {
-            SDL_Delay(16 - frame_time);
+        // Cap at either 30 FPS or 60 FPS.
+        if (frame_time < target_frame_ms) {
+            SDL_Delay(target_frame_ms - frame_time);
         }
         
         // Update FPS counter

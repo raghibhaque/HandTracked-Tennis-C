@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 // Game constants
-#define GAME_WIDTH 1280
+#define GAME_WIDTH 1520
 #define GAME_HEIGHT 720
 #define COURT_WIDTH 960
 #define COURT_HEIGHT 600

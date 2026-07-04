@@ -9,6 +9,8 @@ A real-time hand-tracking tennis game built in C using OpenCV for computer visio
 - **AI opponent** with 4 difficulty levels (Easy → Extreme) with predictive behavior
 - **Visual effects** particle system for collision feedback
 - **Real-time score tracking** and win conditions (first to 11)
+- **Modern glass-style HUD** with a dedicated hand-tracking status panel
+- **Configurable frame cap** for 30 FPS or 60 FPS playback
 
 ---
 
@@ -68,7 +70,7 @@ make -j4
 
 ### Step 4: Run
 ```bash
-./hand_tennis [difficulty]
+./hand_tennis [difficulty] [fps]
 ```
 
 #### Difficulty Levels:
@@ -77,11 +79,17 @@ make -j4
 - `2` = **Hard** (fast, predictive)
 - `3` = **Extreme** (godlike AI)
 
+#### FPS Cap:
+- `30` = lower CPU usage and a lighter frame cap
+- `60` = smoother motion and the default cap
+
 #### Examples:
 ```bash
 ./hand_tennis        # Starts on Medium
 ./hand_tennis 0      # Easy mode
 ./hand_tennis 3      # Extreme mode
+./hand_tennis 1 30   # Medium mode at 30 FPS
+./hand_tennis 2 60   # Hard mode at 60 FPS
 ```
 
 ---
@@ -120,7 +128,7 @@ hand_tennis_game/
 **Calibration Tip:** If hand tracking isn't working:
 - Ensure good lighting (natural/bright indoor)
 - Adjust HSV thresholds in `hand_tracker.c` if needed
-- Green indicator = tracking active (see bottom-right corner)
+- Check the hand-tracking panel on the right side of the window for detection state and confidence
 
 ### Game Physics
 - **Ball**: Constant velocity + gravity (0.3 px/frame²)
@@ -148,9 +156,10 @@ hand_tennis_game/
 | Restart (after game over) | Press SPACE |
 | Quit | Press ESC or close window |
 
-**Hand Tracking Indicators (bottom-right):**
-- 🟢 **Green circle** = Hand detected & tracking
-- 🔴 **Red circle** = Hand not detected (tracking lost)
+**Hand Tracking Panel (right side):**
+- Detection state shows whether the hand is currently tracked
+- Confidence bar shows how stable the tracking is
+- Vertical hand-position guide shows the current smoothed hand Y position
 
 ---
 
@@ -181,7 +190,7 @@ hand_tennis_game/
 
 ## Performance Notes
 
-- **Target FPS**: 60 (capped in main loop)
+- **Target FPS**: 30 or 60, depending on the runtime cap you pass to `hand_tennis`
 - **Hand tracking**: ~30 ms per frame (640x480 with morphological ops)
 - **AI prediction**: O(1) per frame after reaction delay
 - **Memory**: ~10 MB (minimal allocations in game loop)

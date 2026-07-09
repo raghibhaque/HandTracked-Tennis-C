@@ -2,6 +2,8 @@
 
 #include <opencv2/opencv.hpp>
 
+#include <SDL2/SDL.h>
+
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -17,6 +19,10 @@ struct HandTracker {
     cv::Mat mask;
     cv::Mat eroded;
     cv::Mat dilated;
+    cv::Mat preview_rgb;
+    SDL_Window *preview_window = nullptr;
+    SDL_Renderer *preview_renderer = nullptr;
+    SDL_Texture *preview_texture = nullptr;
     int frame_width = 0;
     int frame_height = 0;
     cv::Point2f smoothed_center = cv::Point2f(-1.0f, -1.0f);
@@ -34,6 +40,25 @@ static constexpr double MIN_CONTOUR_AREA = 900.0;
 static constexpr double MIN_SOLIDITY = 0.55;
 static constexpr double MAX_ASPECT_RATIO = 2.8;
 static const char *PREVIEW_WINDOW_NAME = "Hand Tennis - Camera Preview";
+
+static void update_preview_window(HandTracker *tracker, const cv::Mat &preview_frame) {
+    if (!tracker->preview_window_open || !tracker->preview_renderer || !tracker->preview_texture) {
+        return;
+    }
+
+    cv::cvtColor(preview_frame, tracker->preview_rgb, cv::COLOR_BGR2RGB);
+
+    SDL_UpdateTexture(
+        tracker->preview_texture,
+        NULL,
+        tracker->preview_rgb.data,
+        static_cast<int>(tracker->preview_rgb.step)
+    );
+
+    SDL_RenderClear(tracker->preview_renderer);
+    SDL_RenderCopy(tracker->preview_renderer, tracker->preview_texture, NULL, NULL);
+    SDL_RenderPresent(tracker->preview_renderer);
+}
 
 static bool open_camera_index(HandTracker *tracker, int camera_index) {
     if (!tracker->capture.open(camera_index, cv::CAP_ANY)) {
@@ -86,9 +111,45 @@ HandTracker* hand_tracker_init(void) {
         return nullptr;
     }
 
-    cv::namedWindow(PREVIEW_WINDOW_NAME, cv::WINDOW_NORMAL);
-    cv::resizeWindow(PREVIEW_WINDOW_NAME, 800, 600);
-    tracker->preview_window_open = true;
+    tracker->preview_window = SDL_CreateWindow(
+        PREVIEW_WINDOW_NAME,
+        SDL_WINDOWPOS_CENTERED,
+        SDL_WINDOWPOS_CENTERED,
+        800,
+        600,
+        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
+    );
+    if (!tracker->preview_window) {
+        std::fprintf(stderr, "Warning: Could not create camera preview window: %s\n", SDL_GetError());
+    } else {
+        tracker->preview_renderer = SDL_CreateRenderer(
+            tracker->preview_window,
+            -1,
+            SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC
+        );
+        if (!tracker->preview_renderer) {
+            std::fprintf(stderr, "Warning: Could not create camera preview renderer: %s\n", SDL_GetError());
+            SDL_DestroyWindow(tracker->preview_window);
+            tracker->preview_window = nullptr;
+        } else {
+            tracker->preview_texture = SDL_CreateTexture(
+                tracker->preview_renderer,
+                SDL_PIXELFORMAT_RGB24,
+                SDL_TEXTUREACCESS_STREAMING,
+                tracker->frame_width,
+                tracker->frame_height
+            );
+            if (!tracker->preview_texture) {
+                std::fprintf(stderr, "Warning: Could not create camera preview texture: %s\n", SDL_GetError());
+                SDL_DestroyRenderer(tracker->preview_renderer);
+                SDL_DestroyWindow(tracker->preview_window);
+                tracker->preview_renderer = nullptr;
+                tracker->preview_window = nullptr;
+            } else {
+                tracker->preview_window_open = true;
+            }
+        }
+    }
 
     std::printf("Hand tracker initialized: %dx%d\n", tracker->frame_width, tracker->frame_height);
     return tracker;
@@ -187,8 +248,7 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
         cv::putText(preview_frame, "Searching for hand...", cv::Point(16, 30), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2, cv::LINE_AA);
     }
 
-    cv::imshow(PREVIEW_WINDOW_NAME, preview_frame);
-    cv::waitKey(1);
+    update_preview_window(tracker, preview_frame);
 
     return detected;
 }
@@ -201,7 +261,15 @@ void hand_tracker_cleanup(HandTracker *tracker) {
     }
 
     if (tracker->preview_window_open) {
-        cv::destroyWindow(PREVIEW_WINDOW_NAME);
+        if (tracker->preview_texture) {
+            SDL_DestroyTexture(tracker->preview_texture);
+        }
+        if (tracker->preview_renderer) {
+            SDL_DestroyRenderer(tracker->preview_renderer);
+        }
+        if (tracker->preview_window) {
+            SDL_DestroyWindow(tracker->preview_window);
+        }
     }
 
     delete tracker;

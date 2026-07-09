@@ -37,6 +37,7 @@ target_link_libraries(hand_tennis
     ${SDL2_TTF_LIBRARIES}
     opencv_core
     opencv_imgproc
+    opencv_highgui
     opencv_videoio
     m
 )

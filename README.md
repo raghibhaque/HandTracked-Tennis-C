@@ -1,220 +1,195 @@
-# Hand Tennis Game - Build Guide
+# HandTracked-Tennis-C
 
-## Quick Overview
-A real-time hand-tracking tennis game built in C using OpenCV for computer vision and SDL2 for graphics.
+Real-time webcam tennis game written in C/C++ with OpenCV hand detection and SDL2 rendering.
 
-### Features
-- **Live hand tracking** via webcam (skin color detection + contour analysis)
-- **Physics simulation** with ball gravity, paddle collisions, and velocity damping
-- **AI opponent** with 4 difficulty levels (Easy → Extreme) with predictive behavior
-- **Visual effects** particle system for collision feedback
-- **Real-time score tracking** and win conditions (first to 11)
-- **Modern glass-style HUD** with a dedicated hand-tracking status panel
-- **Configurable frame cap** for 30 FPS or 60 FPS playback
+The player paddle is controlled by your hand position in front of a camera. The opponent is AI-driven with four difficulty levels, and the game renders a live HUD showing tracking confidence, hand position, FPS, and score.
 
----
+## Core Features
 
-## Dependencies
+- Real-time hand tracking from webcam input (OpenCV, HSV skin segmentation, contour filtering)
+- Playable Pong-style tennis loop with gravity, collisions, spin, and particle effects
+- Four AI difficulty modes: Easy, Medium, Hard, Extreme
+- Modern widescreen HUD with a dedicated hand-tracking diagnostics panel
+- Built-in camera preview window rendered through SDL
+- Configurable frame cap from command line (30 or 60 FPS)
 
-### Ubuntu/Debian
+## Tech Stack
+
+- C11 and C++17
+- OpenCV 4 (core, imgproc, videoio)
+- SDL2
+- SDL2_ttf
+- CMake 3.10+
+
+## Project Layout
+
+```text
+HandTracked-Tennis-C/
+├── main.c              # Startup, camera prompt, game loop, CLI parsing
+├── game.h              # Shared game constants, types, API
+├── game.c              # Game state init/update/reset and win logic
+├── physics.c           # Ball movement, collisions, particles, scoring
+├── ai_opponent.c       # AI behavior and difficulty scaling
+├── rendering.c         # SDL windowing, court/HUD rendering, game-over view
+├── hand_tracker.h      # C interface for tracker module
+├── hand_tracker.cpp    # OpenCV capture, hand detection, preview output
+├── CMakeLists.txt      # Build configuration
+├── run.bat             # Windows helper launcher
+├── QUICK_START.md
+├── HAND_TRACKING_GUIDE.md
+└── ARCHITECTURE.md
+```
+
+## Build
+
+### Linux (Ubuntu/Debian)
+
 ```bash
 sudo apt-get update
-sudo apt-get install -y \
-    build-essential \
-    cmake \
-    libopencv-dev \
-    libsdl2-dev \
-    pkg-config
+sudo apt-get install -y build-essential cmake pkg-config libopencv-dev libsdl2-dev libsdl2-ttf-dev
+
+cd HandTracked-Tennis-C
+cmake -S . -B build
+cmake --build build -j
 ```
 
-### macOS (Homebrew)
+Run:
+
 ```bash
-brew install cmake opencv sdl2 pkg-config
+./build/hand_tennis
 ```
 
-### Fedora/RHEL
+### Windows (MSYS2 UCRT64 recommended)
+
+Install MSYS2 and then install toolchain/packages in UCRT64 shell:
+
 ```bash
-sudo dnf install -y \
-    gcc \
-    cmake \
-    opencv-devel \
-    SDL2-devel \
-    pkg-config
+pacman -S --needed mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-opencv mingw-w64-ucrt-x86_64-SDL2 mingw-w64-ucrt-x86_64-SDL2_ttf
 ```
 
-### Windows (MSVC or MinGW)
-- Download OpenCV prebuilt binaries
-- Download SDL2 prebuilt binaries
-- Set environment variables or update CMakeLists.txt paths
+Build:
 
----
-
-## Building
-
-### Step 1: Create build directory
 ```bash
-cd hand_tennis_game
-mkdir -p build
-cd build
+cd HandTracked-Tennis-C
+cmake -S . -B build -G "MinGW Makefiles"
+cmake --build build -j
 ```
 
-### Step 2: Configure with CMake
+Run with helper script:
+
+```bat
+run.bat
+```
+
+Or run executable directly:
+
+```bat
+build\hand_tennis.exe
+```
+
+## Command-Line Usage
+
+```text
+hand_tennis [difficulty] [fps]
+```
+
+- Difficulty values:
+1. 0 = Easy
+2. 1 = Medium (default)
+3. 2 = Hard
+4. 3 = Extreme
+
+- FPS cap values:
+1. 30 = lower CPU usage
+2. 60 = smoother motion (default)
+
+Examples:
+
 ```bash
-cmake ..
+./hand_tennis
+./hand_tennis 0
+./hand_tennis 3
+./hand_tennis 1 30
 ```
-
-### Step 3: Compile
-```bash
-make -j4
-```
-
-### Step 4: Run
-```bash
-./hand_tennis [difficulty] [fps]
-```
-
-#### Difficulty Levels:
-- `0` = **Easy** (slow opponent, forgiving)
-- `1` = **Medium** (balanced, default)
-- `2` = **Hard** (fast, predictive)
-- `3` = **Extreme** (godlike AI)
-
-#### FPS Cap:
-- `30` = lower CPU usage and a lighter frame cap
-- `60` = smoother motion and the default cap
-
-#### Examples:
-```bash
-./hand_tennis        # Starts on Medium
-./hand_tennis 0      # Easy mode
-./hand_tennis 3      # Extreme mode
-./hand_tennis 1 30   # Medium mode at 30 FPS
-./hand_tennis 2 60   # Hard mode at 60 FPS
-```
-
----
-
-## File Structure
-
-```
-hand_tennis_game/
-├── CMakeLists.txt          # Build configuration
-├── include/
-│   ├── game.h              # Core game structures & definitions
-│   └── hand_tracker.h      # Hand tracking interface
-├── src/
-│   ├── main.c              # Game loop & entry point
-│   ├── game.c              # Game state management
-│   ├── hand_tracker.c      # OpenCV hand detection (skin color + contours)
-│   ├── physics.c           # Ball physics & collision detection
-│   ├── ai_opponent.c       # AI paddle controller with difficulty
-│   └── rendering.c         # SDL2 graphics rendering
-└── README.md               # This file
-```
-
----
-
-## How It Works
-
-### Hand Tracking (OpenCV)
-1. Captures video from default camera (640x480)
-2. Converts BGR → HSV color space
-3. Applies skin color thresholding (H: 0-20, S: 10-255, V: 60-255)
-4. Morphological operations (erode → dilate) for noise reduction
-5. Finds largest contour (assumed to be the hand)
-6. Returns center coordinates of bounding rectangle
-7. Exponential smoothing applied in game loop for stability
-
-**Calibration Tip:** If hand tracking isn't working:
-- Ensure good lighting (natural/bright indoor)
-- Adjust HSV thresholds in `hand_tracker.c` if needed
-- Check the hand-tracking panel on the right side of the window for detection state and confidence
-
-### Game Physics
-- **Ball**: Constant velocity + gravity (0.3 px/frame²)
-- **Paddles**: Controlled via hand position (player) or AI (opponent)
-- **Collisions**: AABB (Axis-Aligned Bounding Box) detection
-- **Bounce**: Velocity reversal + damping (0.95x)
-- **Spin**: Ball inherits paddle velocity × 0.5
-- **Speed cap**: Max speed = 15 px/frame
-
-### AI Opponent
-| Difficulty | Reaction Delay | Prediction | Speed | Accuracy |
-|-----------|----------------|-----------|-------|----------|
-| Easy      | 20 frames      | 30%       | 0.7x  | ±20 px  |
-| Medium    | 12 frames      | 60%       | 0.9x  | Accurate |
-| Hard      | 6 frames       | 85%       | 1.1x  | Accurate |
-| Extreme   | 2 frames       | 100%      | 1.3x  | Perfect  |
-
----
 
 ## Controls
 
-| Action | Control |
-|--------|---------|
-| Move paddle | Move hand up/down in front of camera |
-| Restart (after game over) | Press SPACE |
-| Quit | Press ESC or close window |
+- Move paddle: move your hand up/down in front of the camera
+- Restart after game over: Space
+- Quit: Esc or close the game window
 
-**Hand Tracking Panel (right side):**
-- Detection state shows whether the hand is currently tracked
-- Confidence bar shows how stable the tracking is
-- Vertical hand-position guide shows the current smoothed hand Y position
+## Camera and Tracking Behavior
 
----
+- On startup, the app opens a camera-access prompt window with Retry/Quit actions.
+- The tracker can use a specific camera via environment variable:
+
+```bash
+HAND_TENNIS_CAMERA_INDEX=1 ./build/hand_tennis
+```
+
+- If no camera index is provided, indices 0 through 9 are probed automatically.
+- Camera frames are processed at 640x480, then converted to normalized 0-100 coordinates.
+- Hand confidence ramps up/down over time and gates paddle control.
+
+## Gameplay Model
+
+- Court area: 960x600 inside a 1520x720 window
+- Ball dynamics:
+1. Gravity each frame
+2. Top/bottom bounce damping
+3. Paddle collision velocity reversal
+4. Spin transfer from paddle vertical velocity
+5. Speed growth capped by MAX_BALL_SPEED
+
+- Score to win: first to 11 points
+
+## AI Difficulty Tuning
+
+| Difficulty | Reaction Delay (frames) | Prediction Factor | Speed Multiplier |
+| --- | --- | --- | --- |
+| Easy | 20 | 0.30 | 0.70 |
+| Medium | 12 | 0.60 | 0.90 |
+| Hard | 6 | 0.85 | 1.10 |
+| Extreme | 2 | 1.00 | 1.30 |
+
+Easy mode also adds random targeting error to feel less robotic.
 
 ## Troubleshooting
 
-### "Could not open camera"
-- Check camera permissions (especially on Linux/macOS)
-- Try `ls -la /dev/video*` to see available cameras
-- On macOS: Check System Preferences → Security & Privacy → Camera
+### Camera does not open
 
-### "Hand tracking not working / losing detection"
-- **Lighting**: Ensure good lighting (shadows affect skin detection)
-- **Camera angle**: Position camera 30-45° downward
-- **Contrast**: Avoid uniform background colors
-- **Distance**: Keep hand 20-60 cm from camera
+- Verify OS camera permissions for the app/session.
+- Try forcing a different camera index via HAND_TENNIS_CAMERA_INDEX.
+- Close other apps that may be locking the camera.
 
-### Low frame rate
-- Close other GPU-intensive applications
-- Reduce camera resolution in `hand_tracker.c` (line ~35)
-- Switch to lower difficulty (less AI computation)
+### Hand is not detected reliably
 
-### Build errors
-- Ensure all dependencies installed: `pkg-config --modversion opencv`
-- Check CMake found packages: `cmake .. -DCMAKE_VERBOSE_MAKEFILE=ON`
-- On Linux: `sudo ldconfig` to update library cache
+- Improve lighting and reduce harsh shadows.
+- Keep your hand in frame with clear contrast from background.
+- Adjust HSV thresholds in hand_tracker.cpp for your environment/skin tone.
 
----
+### Build cannot find dependencies
 
-## Performance Notes
+- Confirm pkg-config sees modules:
 
-- **Target FPS**: 30 or 60, depending on the runtime cap you pass to `hand_tennis`
-- **Hand tracking**: ~30 ms per frame (640x480 with morphological ops)
-- **AI prediction**: O(1) per frame after reaction delay
-- **Memory**: ~10 MB (minimal allocations in game loop)
+```bash
+pkg-config --modversion opencv4 sdl2 SDL2_ttf
+```
 
----
+- Reconfigure with a clean build directory:
 
-## Future Enhancements
+```bash
+cmake -S . -B build
+```
 
-- [ ] Finger-specific tracking (MediaPipe C++ bindings for precise racquet angle)
-- [ ] Sound effects (paddle hit, score, game over)
-- [ ] Multiple game modes (classic, zen/practice, tournament)
-- [ ] Network multiplayer (player vs player over network)
-- [ ] Configurable AI personality (different strategies)
-- [ ] Power-ups (speed boost, ball slowmo, paddle size)
-- [ ] Statistics tracking (longest rally, fastest ball, etc.)
+## Notes for Contributors
 
----
+- Keep hand coordinate handling in normalized 0-100 units across tracker and game logic.
+- The camera preview intentionally uses SDL rendering instead of OpenCV highgui windows for better Windows runtime compatibility.
+- If you tune gameplay, update AI and physics constants in ai_opponent.c, game.h, and physics.c together.
 
-## License
+## Related Docs
 
-This project is open-source. Feel free to modify and extend for your portfolio!
-
----
-
-## Contact
-
-Built for portfolio + internship at J&J Vision Care. Questions? Check the code comments—they're detailed!
+- QUICK_START.md for a short setup path
+- HAND_TRACKING_GUIDE.md for tracker tuning details
+- ARCHITECTURE.md for module-level technical details

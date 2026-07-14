@@ -72,25 +72,29 @@ void game_update(GameState *state, Hand *hand) {
     // Update hand tracking with exponential smoothing
     if (hand->detected) {
         state->hand.detected = true;
+        state->hand.x = hand->x;
+        state->hand.y = hand->y;
         state->hand.tracking_confidence = (state->hand.tracking_confidence + 2) > 100 ? 100 : state->hand.tracking_confidence + 2;
-        
+
         // Exponential smoothing for hand position
         state->hand.smoothed_x = state->hand.smoothed_x * 0.8f + hand->x * 0.2f;
         state->hand.smoothed_y = state->hand.smoothed_y * 0.8f + hand->y * 0.2f;
     } else {
         state->hand.tracking_confidence = (state->hand.tracking_confidence - 1) < 0 ? 0 : state->hand.tracking_confidence - 1;
     }
-    
+
     // Map normalized camera position (0-100) to game coordinates.
     if (state->hand.tracking_confidence > 30) {
-        float game_y = COURT_Y + (state->hand.smoothed_y / 100.0f) * COURT_HEIGHT;
-        
+        // Center paddle on the detected hand position
+        float game_y = COURT_Y + (state->hand.smoothed_y / 100.0f) * COURT_HEIGHT - PADDLE_HEIGHT / 2.0f;
+
         // Clamp to valid range
         if (game_y < PADDLE_MIN_Y) game_y = PADDLE_MIN_Y;
         if (game_y > PADDLE_MAX_Y) game_y = PADDLE_MAX_Y;
-        
+
+        float old_y = state->player.y;
         state->player.y = game_y;
-        state->player.vy = 0;  // Hand position is absolute, not velocity-based
+        state->player.vy = state->player.y - old_y;  // Track velocity for spin physics
     } else {
         // No hand detected, apply damping
         state->player.vy *= 0.9f;

@@ -219,9 +219,11 @@ bool camera_prompt_run(CameraPrompt *prompt) {
                 int mouse_x = event.button.x;
                 int mouse_y = event.button.y;
 
-                if (mouse_x >= 160 && mouse_x <= 320 && mouse_y >= 300 && mouse_y <= 354) {
+                // Retry button: drawn at {160, 316, 176, 54} → x 160-336, y 316-370
+                if (mouse_x >= 160 && mouse_x <= 336 && mouse_y >= 316 && mouse_y <= 370) {
                     prompt->retry_clicked = true;
-                } else if (mouse_x >= 400 && mouse_x <= 560 && mouse_y >= 300 && mouse_y <= 354) {
+                // Quit button: drawn at {384, 316, 176, 54} → x 384-560, y 316-370
+                } else if (mouse_x >= 384 && mouse_x <= 560 && mouse_y >= 316 && mouse_y <= 370) {
                     prompt->quit_clicked = true;
                 }
             }

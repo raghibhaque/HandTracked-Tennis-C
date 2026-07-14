@@ -52,13 +52,16 @@ void physics_update_ball(GameState *state) {
     }
     
     // Ball out of bounds (left/right)
+    // Player is on RIGHT; opponent is on LEFT.
+    // Ball exits left  → opponent missed → player scores.
+    // Ball exits right → player missed  → opponent scores.
     if (ball->x < COURT_X - 50) {
-        state->opponent_score++;
+        state->player_score++;
         game_reset_ball(state);
         return;
     }
     if (ball->x > COURT_X + COURT_WIDTH + 50) {
-        state->player_score++;
+        state->opponent_score++;
         game_reset_ball(state);
         return;
     }
@@ -68,23 +71,26 @@ void physics_update_ball(GameState *state) {
 void physics_check_paddle_collisions(GameState *state, Particle *particles, int *particle_count) {
     Ball *ball = &state->ball;
     
-    // Player paddle collision
-    if (check_ball_paddle_collision(ball, &state->player)) {
-        ball->x = state->player.x + state->player.width + ball->radius;
+    // Player paddle collision (player on RIGHT — only collide when ball moving RIGHT toward player)
+    if (check_ball_paddle_collision(ball, &state->player) && ball->vx > 0) {
+        // Place ball to the left face of player paddle
+        ball->x = state->player.x - ball->radius;
         ball->vx = -ball->vx;
-        
+
         // Add spin based on paddle velocity
         ball->vy += state->player.vy * 0.5f;
-        
-        // Increase speed slightly
-        float speed = sqrt(ball->vx * ball->vx + ball->vy * ball->vy);
-        if (speed < MAX_BALL_SPEED) {
-            ball->vx *= 1.05f;
-            ball->vy *= 1.05f;
+
+        // Increase speed slightly, clamped to MAX_BALL_SPEED
+        float speed = sqrtf(ball->vx * ball->vx + ball->vy * ball->vy);
+        if (speed > 0.0f && speed < MAX_BALL_SPEED) {
+            float new_speed = speed * 1.05f;
+            if (new_speed > MAX_BALL_SPEED) new_speed = MAX_BALL_SPEED;
+            ball->vx = ball->vx * new_speed / speed;
+            ball->vy = ball->vy * new_speed / speed;
         }
-        
-        // Create particle effect
-        if (*particle_count < 256) {
+
+        // Create particle effect (guard against overflow: need room for 8 more)
+        if (*particle_count + 8 <= 256) {
             for (int i = 0; i < 8; i++) {
                 particles[*particle_count].x = ball->x;
                 particles[*particle_count].y = ball->y;
@@ -99,24 +105,27 @@ void physics_check_paddle_collisions(GameState *state, Particle *particles, int 
             }
         }
     }
-    
-    // Opponent paddle collision
-    if (check_ball_paddle_collision(ball, &state->opponent)) {
-        ball->x = state->opponent.x - ball->radius;
+
+    // Opponent paddle collision (opponent on LEFT — only collide when ball moving LEFT toward opponent)
+    if (check_ball_paddle_collision(ball, &state->opponent) && ball->vx < 0) {
+        // Place ball to the right face of opponent paddle
+        ball->x = state->opponent.x + state->opponent.width + ball->radius;
         ball->vx = -ball->vx;
-        
+
         // Add spin based on paddle velocity
         ball->vy += state->opponent.vy * 0.5f;
-        
-        // Increase speed slightly
-        float speed = sqrt(ball->vx * ball->vx + ball->vy * ball->vy);
-        if (speed < MAX_BALL_SPEED) {
-            ball->vx *= 1.05f;
-            ball->vy *= 1.05f;
+
+        // Increase speed slightly, clamped to MAX_BALL_SPEED
+        float speed = sqrtf(ball->vx * ball->vx + ball->vy * ball->vy);
+        if (speed > 0.0f && speed < MAX_BALL_SPEED) {
+            float new_speed = speed * 1.05f;
+            if (new_speed > MAX_BALL_SPEED) new_speed = MAX_BALL_SPEED;
+            ball->vx = ball->vx * new_speed / speed;
+            ball->vy = ball->vy * new_speed / speed;
         }
-        
-        // Create particle effect
-        if (*particle_count < 256) {
+
+        // Create particle effect (guard against overflow: need room for 8 more)
+        if (*particle_count + 8 <= 256) {
             for (int i = 0; i < 8; i++) {
                 particles[*particle_count].x = ball->x;
                 particles[*particle_count].y = ball->y;

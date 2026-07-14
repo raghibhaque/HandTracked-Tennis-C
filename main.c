@@ -14,7 +14,8 @@ typedef struct {
 } Renderer;
 
 Renderer* rendering_init(void);
-void rendering_draw_game(Renderer *r, GameState *state, const char *difficulty_name);
+SDL_Renderer* rendering_get_sdl_renderer(Renderer *r);
+void rendering_draw_game(Renderer *r, GameState *state, const char *difficulty_name, HandTracker *tracker);
 void rendering_cleanup(Renderer *r);
 
 const char* ai_get_difficulty_name(Difficulty difficulty);
@@ -283,15 +284,26 @@ int main(int argc, char *argv[]) {
            difficulty == DIFFICULTY_HARD ? "Hard" : "Extreme");
     printf("Frame cap: %d FPS\n\n", frame_cap);
 
+    printf("[1/4] Initializing graphics...\n");
+    Renderer *renderer = rendering_init();
+    if (!renderer) {
+        fprintf(stderr, "Failed to initialize renderer\n");
+        TTF_Quit();
+        SDL_Quit();
+        return 1;
+    }
+    printf("      ✓ Graphics ready\n");
+
     CameraPrompt *camera_prompt = camera_prompt_init();
     if (!camera_prompt) {
         fprintf(stderr, "Failed to open camera prompt window\n");
+        rendering_cleanup(renderer);
         TTF_Quit();
         SDL_Quit();
         return 1;
     }
 
-    printf("[1/4] Camera access window open.\n");
+    printf("[2/4] Camera access window open.\n");
     printf("      If Windows asks for camera permission, allow it.\n");
     printf("      Press R or click Retry after enabling camera access.\n");
 
@@ -300,13 +312,14 @@ int main(int argc, char *argv[]) {
     while (!camera_ready) {
         if (!camera_prompt_run(camera_prompt)) {
             camera_prompt_cleanup(camera_prompt);
+            rendering_cleanup(renderer);
             TTF_Quit();
             SDL_Quit();
             return 1;
         }
 
-        printf("[2/4] Initializing hand tracker...\n");
-        hand_tracker = hand_tracker_init();
+        printf("[3/4] Initializing hand tracker...\n");
+        hand_tracker = hand_tracker_init(rendering_get_sdl_renderer(renderer));
         if (hand_tracker) {
             camera_ready = true;
             printf("      ✓ Hand tracker ready\n");
@@ -317,24 +330,13 @@ int main(int argc, char *argv[]) {
     }
 
     camera_prompt_cleanup(camera_prompt);
-    
-    printf("[3/4] Initializing graphics...\n");
-    Renderer *renderer = rendering_init();
-    if (!renderer) {
-        fprintf(stderr, "Failed to initialize renderer\n");
-        hand_tracker_cleanup(hand_tracker);
-        TTF_Quit();
-        SDL_Quit();
-        return 1;
-    }
-    printf("      ✓ Graphics ready\n");
-    
+
     printf("[4/4] Initializing game state...\n");
     GameState *game_state = game_init(difficulty);
     if (!game_state) {
         fprintf(stderr, "Failed to initialize game\n");
-        rendering_cleanup(renderer);
         hand_tracker_cleanup(hand_tracker);
+        rendering_cleanup(renderer);
         TTF_Quit();
         SDL_Quit();
         return 1;
@@ -405,10 +407,11 @@ int main(int argc, char *argv[]) {
         game_update(game_state, &hand_input);
         
         // Render
-        rendering_draw_game(renderer, game_state, 
+        rendering_draw_game(renderer, game_state,
                            difficulty == DIFFICULTY_EASY ? "Easy" :
                            difficulty == DIFFICULTY_MEDIUM ? "Medium" :
-                           difficulty == DIFFICULTY_HARD ? "Hard" : "Extreme");
+                           difficulty == DIFFICULTY_HARD ? "Hard" : "Extreme",
+                           hand_tracker);
     }
     
     printf("\n[Cleanup] Shutting down...\n");

@@ -2,6 +2,7 @@
 #define HAND_TRACKER_H
 
 #include <stdbool.h>
+#include <SDL2/SDL.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -9,14 +10,19 @@ extern "C" {
 
 typedef struct HandTracker HandTracker;
 
-// Initialize camera and hand tracking
-HandTracker* hand_tracker_init(void);
+// Initialize camera and hand tracking.
+// renderer: the main game SDL_Renderer used to create the embedded preview texture.
+HandTracker* hand_tracker_init(SDL_Renderer *renderer);
 
-// Detect hand center point in current frame
-// Returns true if hand detected, fills x and y with coordinates
+// Detect hand in current frame. Returns true if detected.
+// x, y: normalized 0-100 coords of hand center.
 bool hand_tracker_detect(HandTracker *tracker, float *x, float *y);
 
-// Cleanup and release resources
+// Get the camera preview SDL_Texture (updated each detect call).
+// The tracker owns this texture — do NOT destroy it.
+SDL_Texture* hand_tracker_get_preview_texture(HandTracker *tracker);
+
+// Release all resources.
 void hand_tracker_cleanup(HandTracker *tracker);
 
 #ifdef __cplusplus

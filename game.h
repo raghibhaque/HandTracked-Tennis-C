@@ -9,7 +9,7 @@
 #define GAME_HEIGHT 720
 #define COURT_WIDTH 960
 #define COURT_HEIGHT 600
-#define COURT_X 160
+#define COURT_X 10
 #define COURT_Y 60
 
 // Ball constants

@@ -41,9 +41,12 @@ static constexpr int SKIN_V_MAX  = 255;
 static constexpr int SKIN_H2_MIN = 160;
 static constexpr int SKIN_H2_MAX = 180;
 static constexpr double MIN_CONTOUR_AREA = 900.0;
+static constexpr double MAX_CONTOUR_AREA = 35000.0;
 // True solidity (area / convex-hull area)
 static constexpr double MIN_SOLIDITY = 0.45;
 static constexpr double MAX_ASPECT_RATIO = 3.0;
+// Distance penalty weight for temporal continuity
+static constexpr double DISTANCE_PENALTY_WEIGHT = 15.0;
 // Frames of no detection before continuity resets
 static constexpr int GRACE_FRAMES = 5;
 
@@ -155,7 +158,7 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
 
     for (const auto &contour : contours) {
         double area = cv::contourArea(contour);
-        if (area < MIN_CONTOUR_AREA) continue;
+        if (area < MIN_CONTOUR_AREA || area > MAX_CONTOUR_AREA) continue;
 
         cv::Rect rect = cv::boundingRect(contour);
         if (rect.width <= 0 || rect.height <= 0) continue;
@@ -187,7 +190,7 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
         if (tracker->has_last_center) {
             double dx = centroid.x - tracker->last_center.x;
             double dy = centroid.y - tracker->last_center.y;
-            score -= std::sqrt(dx * dx + dy * dy) * 2.0;
+            score -= std::sqrt(dx * dx + dy * dy) * DISTANCE_PENALTY_WEIGHT;
         }
 
         if (score > best_score) {

@@ -201,11 +201,25 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
         }
     }
 
-    if (detected) {
-        *x = (best_center.x / tracker->frame_width)  * 100.0f;
-        *y = (best_center.y / tracker->frame_height) * 100.0f;
+    cv::Point2f palm_center(-1.0f, -1.0f);
 
-        tracker->last_center     = best_center;
+    if (detected) {
+        // Distance transform on filled contour mask: the pixel with the maximum
+        // distance to any boundary is always inside the palm, never in a finger.
+        cv::Mat palm_mask = cv::Mat::zeros(tracker->dilated.size(), CV_8UC1);
+        std::vector<std::vector<cv::Point>> tmp = {best_contour};
+        cv::drawContours(palm_mask, tmp, 0, 255, cv::FILLED);
+        cv::Mat dist;
+        cv::distanceTransform(palm_mask, dist, cv::DIST_L2, 5);
+        cv::Point max_loc;
+        cv::minMaxLoc(dist, nullptr, nullptr, nullptr, &max_loc);
+        palm_center = cv::Point2f(static_cast<float>(max_loc.x),
+                                  static_cast<float>(max_loc.y));
+
+        *x = (palm_center.x / tracker->frame_width)  * 100.0f;
+        *y = (palm_center.y / tracker->frame_height) * 100.0f;
+
+        tracker->last_center     = palm_center;
         tracker->has_last_center = true;
         tracker->lost_frames     = 0;
     } else {
@@ -221,8 +235,8 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
         if (detected) {
             cv::Rect rect = cv::boundingRect(best_contour);
             cv::rectangle(preview_frame, rect, cv::Scalar(0, 255, 0), 2);
-            cv::circle(preview_frame, best_center, 6, cv::Scalar(0, 255, 255), -1);
-            cv::putText(preview_frame, "Hand tracked", cv::Point(10, 26),
+            cv::circle(preview_frame, palm_center, 8, cv::Scalar(0, 255, 255), -1);
+            cv::putText(preview_frame, "Palm tracked", cv::Point(10, 26),
                         cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2, cv::LINE_AA);
         } else {
             cv::putText(preview_frame, "Searching...", cv::Point(10, 26),

@@ -350,7 +350,7 @@ void rendering_draw_game(Renderer *r, GameState *state, const char *difficulty_n
     SDL_Color status_outline = tracked ? color_rgba(41, 247, 154, 90) : color_rgba(255, 92, 120, 90);
     draw_panel(r->renderer, status_rect, status_fill, status_outline);
     draw_text_centered(r->renderer, r->ui_font_bold,
-                       tracked ? "HAND DETECTED" : "SEARCHING FOR HAND...",
+                       tracked ? "PALM DETECTED" : "SEARCHING FOR PALM...",
                        status_rect,
                        tracked ? color_rgba(160, 255, 205, 255) : color_rgba(255, 185, 195, 255));
 

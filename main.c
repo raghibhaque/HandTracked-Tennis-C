@@ -394,6 +394,8 @@ int main(int argc, char *argv[]) {
                         // Restart game
                         game_cleanup(game_state);
                         game_state = game_init(difficulty);
+                    } else if (event.key.keysym.sym == SDLK_r) {
+                        hand_tracker_recalibrate(hand_tracker);
                     }
                     break;
             }

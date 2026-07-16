@@ -39,5 +39,7 @@ target_link_libraries(hand_tennis
     opencv_imgproc
     opencv_videoio
     opencv_video
+    opencv_dnn
+    opencv_objdetect
     m
 )

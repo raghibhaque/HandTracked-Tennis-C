@@ -22,6 +22,11 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y);
 // The tracker owns this texture — do NOT destroy it.
 SDL_Texture* hand_tracker_get_preview_texture(HandTracker *tracker);
 
+// Force recalibration of the static skin-color background and adaptive skin
+// model on the next N frames. Safe to call from any thread but the main
+// tracker thread; expected to be called from the SDL event loop.
+void hand_tracker_recalibrate(HandTracker *tracker);
+
 // Release all resources.
 void hand_tracker_cleanup(HandTracker *tracker);
 

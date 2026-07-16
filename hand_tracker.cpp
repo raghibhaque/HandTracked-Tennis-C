@@ -3,6 +3,8 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/video/background_segm.hpp>
 #include <opencv2/video/tracking.hpp>
+#include <opencv2/dnn.hpp>
+#include <opencv2/objdetect.hpp>
 
 #include <SDL2/SDL.h>
 
@@ -48,6 +50,27 @@ struct HandTracker {
     // Stale-lock detection: if palm sits still too long, drop and re-acquire.
     cv::Point2f last_moved_center = cv::Point2f(-1.0f, -1.0f);
     int stale_frames = 0;
+
+    // Tier 1: DNN palm detector.
+    cv::dnn::Net net;
+    bool net_loaded = false;
+    int  net_input_size = 640;
+
+    // Tier 2: haar face cascade (used only in color fallback path).
+    cv::CascadeClassifier face_cascade;
+    bool face_loaded = false;
+
+    // Tier 2: adaptive per-user skin bounds in YCrCb (mean +- 3sigma per
+    // channel). Cheap to apply (single inRange) and tighter than the global
+    // Chai-Ngan bounds. Sampled from confirmed palm pixels once locked.
+    cv::Scalar adaptive_low  = cv::Scalar(0, 0, 0);
+    cv::Scalar adaptive_high = cv::Scalar(255, 255, 255);
+    bool adaptive_ready = false;
+    int  adaptive_samples = 0;
+    static constexpr int ADAPTIVE_TARGET_SAMPLES = 1500;
+
+    // Recalibrate request from main thread.
+    bool recalibrate_pending = false;
 };
 
 // YCrCb skin bounds — Chai & Ngan (1999).
@@ -172,6 +195,63 @@ HandTracker* hand_tracker_init(SDL_Renderer *renderer) {
     tracker->bg_skin_mask = cv::Mat::zeros(tracker->frame_height,
                                           tracker->frame_width, CV_8UC1);
 
+    // Tier 1: try loading YOLOv8n-hand ONNX. Path lookup order:
+    //   $HAND_TENNIS_MODEL, ./models/palm.onnx, ./palm.onnx
+    // If none found or load fails, tracker falls back to color pipeline.
+    {
+        std::vector<std::string> candidates;
+        if (const char *env = std::getenv("HAND_TENNIS_MODEL")) {
+            candidates.emplace_back(env);
+        }
+        candidates.emplace_back("models/palm.onnx");
+        candidates.emplace_back("palm.onnx");
+
+        for (const auto &path : candidates) {
+            try {
+                cv::dnn::Net n = cv::dnn::readNetFromONNX(path);
+                if (!n.empty()) {
+                    tracker->net = n;
+                    tracker->net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+                    tracker->net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+                    tracker->net_loaded = true;
+                    std::printf("DNN palm detector loaded: %s\n", path.c_str());
+                    break;
+                }
+            } catch (const cv::Exception &) {
+                // Try next candidate silently.
+            }
+        }
+        if (!tracker->net_loaded) {
+            std::printf("DNN palm model not found — using color fallback pipeline.\n");
+            std::printf("  Place YOLOv8n-hand ONNX at 'models/palm.onnx' to enable DNN mode.\n");
+        }
+    }
+
+    // When DNN mode is active, static skin-color background calibration is
+    // unnecessary (background pixels are outside every palm bbox). Skip it.
+    if (tracker->net_loaded) {
+        tracker->calib_ready = true;
+    }
+
+    // Tier 2: try loading Haar frontal-face cascade (used to mask face out of
+    // skin mask in fallback color pipeline). Silently skipped if missing.
+    {
+        std::vector<std::string> candidates;
+        if (const char *env = std::getenv("HAND_TENNIS_HAAR")) {
+            candidates.emplace_back(env);
+        }
+        candidates.emplace_back("models/haarcascade_frontalface_default.xml");
+        candidates.emplace_back("haarcascade_frontalface_default.xml");
+
+        for (const auto &path : candidates) {
+            if (tracker->face_cascade.load(path)) {
+                tracker->face_loaded = true;
+                std::printf("Face cascade loaded: %s\n", path.c_str());
+                break;
+            }
+        }
+    }
+
     if (renderer) {
         tracker->preview_texture = SDL_CreateTexture(
             renderer,
@@ -190,11 +270,281 @@ HandTracker* hand_tracker_init(SDL_Renderer *renderer) {
     return tracker;
 }
 
+// Letterbox to a square target, preserving aspect, padding with gray.
+static cv::Mat letterbox_square(const cv::Mat &src, int size,
+                                float &scale, int &pad_x, int &pad_y) {
+    int w = src.cols;
+    int h = src.rows;
+    scale = std::min(static_cast<float>(size) / static_cast<float>(w),
+                     static_cast<float>(size) / static_cast<float>(h));
+    int new_w = static_cast<int>(std::round(w * scale));
+    int new_h = static_cast<int>(std::round(h * scale));
+    cv::Mat resized;
+    cv::resize(src, resized, cv::Size(new_w, new_h));
+    pad_x = (size - new_w) / 2;
+    pad_y = (size - new_h) / 2;
+    cv::Mat out(size, size, src.type(), cv::Scalar(114, 114, 114));
+    resized.copyTo(out(cv::Rect(pad_x, pad_y, new_w, new_h)));
+    return out;
+}
+
+struct DnnDetection {
+    cv::Rect box;
+    float    conf;
+};
+
+// Decode YOLOv8 single-class output. Expected shape variants:
+//   (1, 5, N)  — Ultralytics default: [cx, cy, w, h, cls_conf]
+//   (1, N, 5)  — some exporters transpose
+// We normalize to rows-of-detections (N, 5) internally.
+static std::vector<DnnDetection> yolov8_decode_single_class(
+        const cv::Mat &raw,
+        float scale, int pad_x, int pad_y,
+        int img_w, int img_h,
+        float conf_th, float iou_th) {
+
+    cv::Mat out;
+    if (raw.dims == 3) {
+        int d1 = raw.size[1];
+        int d2 = raw.size[2];
+        if (d1 == 5 && d2 > 5) {
+            // (1, 5, N) → transpose to (N, 5)
+            cv::Mat tmp(d1, d2, CV_32F, const_cast<float *>(raw.ptr<float>()));
+            out = tmp.t();
+        } else if (d2 == 5 && d1 > 5) {
+            // (1, N, 5)
+            out = cv::Mat(d1, d2, CV_32F, const_cast<float *>(raw.ptr<float>()));
+        } else {
+            // Fallback: reshape naively
+            out = raw.reshape(1, raw.size[1]);
+        }
+    } else {
+        out = raw;
+    }
+
+    std::vector<cv::Rect> boxes;
+    std::vector<float>    confs;
+    boxes.reserve(out.rows);
+    confs.reserve(out.rows);
+
+    for (int i = 0; i < out.rows; ++i) {
+        const float *row = out.ptr<float>(i);
+        float conf = row[4];
+        if (conf < conf_th) continue;
+
+        float cx = row[0];
+        float cy = row[1];
+        float bw = row[2];
+        float bh = row[3];
+
+        // Undo letterbox: back to original image coords.
+        cx = (cx - pad_x) / scale;
+        cy = (cy - pad_y) / scale;
+        bw = bw / scale;
+        bh = bh / scale;
+
+        int x0 = static_cast<int>(std::round(cx - bw * 0.5f));
+        int y0 = static_cast<int>(std::round(cy - bh * 0.5f));
+        int w  = static_cast<int>(std::round(bw));
+        int h  = static_cast<int>(std::round(bh));
+        boxes.emplace_back(x0, y0, w, h);
+        confs.push_back(conf);
+    }
+
+    std::vector<int> keep;
+    cv::dnn::NMSBoxes(boxes, confs, conf_th, iou_th, keep);
+
+    std::vector<DnnDetection> dets;
+    dets.reserve(keep.size());
+    cv::Rect img_bounds(0, 0, img_w, img_h);
+    for (int idx : keep) {
+        DnnDetection d;
+        d.box  = boxes[idx] & img_bounds;
+        d.conf = confs[idx];
+        if (d.box.area() > 0) dets.push_back(d);
+    }
+    return dets;
+}
+
+// Run DNN palm detector on frame. Returns best (or Kalman-nearest) bbox.
+static bool dnn_detect_palm(HandTracker *t,
+                            const cv::Point2f &predicted, bool has_prediction,
+                            cv::Rect &out_bbox, float &out_conf) {
+    float scale = 1.0f;
+    int pad_x = 0, pad_y = 0;
+    cv::Mat letter = letterbox_square(t->frame, t->net_input_size,
+                                      scale, pad_x, pad_y);
+
+    cv::Mat blob = cv::dnn::blobFromImage(
+        letter, 1.0 / 255.0,
+        cv::Size(t->net_input_size, t->net_input_size),
+        cv::Scalar(), /*swapRB=*/true, /*crop=*/false);
+    t->net.setInput(blob);
+
+    cv::Mat output;
+    try {
+        output = t->net.forward();
+    } catch (const cv::Exception &e) {
+        std::fprintf(stderr, "DNN forward failed: %s\n", e.what());
+        return false;
+    }
+
+    auto dets = yolov8_decode_single_class(
+        output, scale, pad_x, pad_y,
+        t->frame.cols, t->frame.rows,
+        /*conf_th=*/0.35f, /*iou_th=*/0.45f);
+
+    if (dets.empty()) return false;
+
+    // Pick highest confidence, but prefer detections near Kalman prediction
+    // when we already have a lock (rejects a second hand or a face-like FP).
+    const DnnDetection *best = nullptr;
+    float best_score = -1e9f;
+    for (const auto &d : dets) {
+        float score = d.conf;
+        if (has_prediction) {
+            cv::Point2f c(d.box.x + d.box.width * 0.5f,
+                          d.box.y + d.box.height * 0.5f);
+            float dx = c.x - predicted.x;
+            float dy = c.y - predicted.y;
+            float dist = std::sqrt(dx * dx + dy * dy);
+            score -= dist * 0.002f;  // ~200px penalty ≈ 0.4 conf
+        }
+        if (score > best_score) {
+            best_score = score;
+            best = &d;
+        }
+    }
+    if (!best) return false;
+
+    out_bbox = best->box;
+    out_conf = best->conf;
+    return true;
+}
+
+// Compute palm center + inscribed radius inside a bbox, using the skin mask
+// as the palm silhouette. Falls back to bbox center if the mask is empty.
+static void palm_center_from_bbox(HandTracker *t, const cv::Rect &bbox,
+                                  cv::Point2f &palm_center, float &palm_radius) {
+    cv::Rect safe = bbox & cv::Rect(0, 0, t->skin_mask.cols, t->skin_mask.rows);
+    if (safe.area() <= 0) {
+        palm_center = cv::Point2f(bbox.x + bbox.width * 0.5f,
+                                  bbox.y + bbox.height * 0.5f);
+        palm_radius = std::min(bbox.width, bbox.height) * 0.4f;
+        return;
+    }
+
+    // If skin mask has good coverage inside bbox, use distance transform for
+    // sub-pixel palm center. Otherwise use bbox center — DNN was confident,
+    // skin threshold just failed for this user's tone.
+    cv::Mat roi_skin = t->skin_mask(safe);
+    int skin_px = cv::countNonZero(roi_skin);
+    double coverage = static_cast<double>(skin_px) / safe.area();
+
+    if (coverage > 0.15) {
+        cv::Mat dist;
+        cv::distanceTransform(roi_skin, dist, cv::DIST_L2, 5);
+        cv::Point max_loc;
+        double max_val = 0.0;
+        cv::minMaxLoc(dist, nullptr, &max_val, nullptr, &max_loc);
+        palm_center = cv::Point2f(static_cast<float>(max_loc.x + safe.x),
+                                  static_cast<float>(max_loc.y + safe.y));
+        palm_radius = static_cast<float>(max_val);
+    } else {
+        palm_center = cv::Point2f(safe.x + safe.width * 0.5f,
+                                  safe.y + safe.height * 0.5f);
+        palm_radius = std::min(safe.width, safe.height) * 0.4f;
+    }
+}
+
+// Sample YCrCb pixels from a confirmed palm ROI to build per-user adaptive
+// skin bounds: mean +- 3sigma per channel. Applied as a single extra inRange
+// call per frame, so cost is negligible.
+static void update_adaptive_skin(HandTracker *t, const cv::Point2f &center,
+                                 float radius) {
+    if (t->adaptive_ready) return;
+    if (radius < 8.0f) return;
+
+    int r = static_cast<int>(radius * 0.6f);
+    cv::Rect roi(static_cast<int>(center.x) - r,
+                 static_cast<int>(center.y) - r,
+                 2 * r, 2 * r);
+    roi &= cv::Rect(0, 0, t->ycrcb.cols, t->ycrcb.rows);
+    if (roi.area() < 100) return;
+
+    cv::Mat patch = t->ycrcb(roi).clone().reshape(1, roi.area());
+    patch.convertTo(patch, CV_32F);
+
+    static thread_local std::vector<cv::Vec3f> pool;
+    for (int i = 0; i < patch.rows; ++i) {
+        pool.emplace_back(patch.at<float>(i, 0),
+                          patch.at<float>(i, 1),
+                          patch.at<float>(i, 2));
+        if (static_cast<int>(pool.size()) >= HandTracker::ADAPTIVE_TARGET_SAMPLES) break;
+    }
+    t->adaptive_samples = static_cast<int>(pool.size());
+
+    if (t->adaptive_samples >= HandTracker::ADAPTIVE_TARGET_SAMPLES) {
+        double sum[3]  = {0, 0, 0};
+        double sum2[3] = {0, 0, 0};
+        for (const auto &v : pool) {
+            for (int c = 0; c < 3; ++c) {
+                sum[c]  += v[c];
+                sum2[c] += static_cast<double>(v[c]) * v[c];
+            }
+        }
+        double n = static_cast<double>(pool.size());
+        double mu[3], sigma[3];
+        for (int c = 0; c < 3; ++c) {
+            mu[c]    = sum[c] / n;
+            double v = sum2[c] / n - mu[c] * mu[c];
+            sigma[c] = std::sqrt(std::max(v, 1.0));
+        }
+        for (int c = 0; c < 3; ++c) {
+            double lo = std::max(0.0,   mu[c] - 3.0 * sigma[c]);
+            double hi = std::min(255.0, mu[c] + 3.0 * sigma[c]);
+            t->adaptive_low[c]  = lo;
+            t->adaptive_high[c] = hi;
+        }
+        t->adaptive_ready = true;
+        pool.clear();
+        std::printf("Adaptive skin bounds: Y[%.0f-%.0f] Cr[%.0f-%.0f] Cb[%.0f-%.0f]\n",
+                    t->adaptive_low[0], t->adaptive_high[0],
+                    t->adaptive_low[1], t->adaptive_high[1],
+                    t->adaptive_low[2], t->adaptive_high[2]);
+    }
+}
+
+void hand_tracker_recalibrate(HandTracker *tracker) {
+    if (!tracker) return;
+    tracker->recalibrate_pending = true;
+}
+
+static void apply_recalibrate(HandTracker *t) {
+    t->calib_frames_done = 0;
+    t->calib_ready = false;
+    t->bg_hit_count.setTo(0);
+    t->bg_skin_mask.setTo(0);
+    t->adaptive_ready = false;
+    t->adaptive_samples = 0;
+    t->has_palm = false;
+    t->kalman_initialized = false;
+    t->lost_frames = 0;
+    t->stale_frames = 0;
+    t->last_moved_center = cv::Point2f(-1.0f, -1.0f);
+    t->recalibrate_pending = false;
+    std::printf("Recalibration triggered — keep hand OUT of view.\n");
+}
+
 bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
     if (!tracker || !tracker->capture.isOpened()) return false;
 
     if (!tracker->capture.read(tracker->frame) || tracker->frame.empty()) {
         return false;
+    }
+
+    if (tracker->recalibrate_pending) {
+        apply_recalibrate(tracker);
     }
 
     const int W = tracker->frame_width;
@@ -229,6 +579,41 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
 
     cv::bitwise_and(tracker->skin_mask_y, tracker->skin_mask_h, tracker->skin_mask);
 
+    // 1a. Adaptive per-user skin bounds (once locked long enough to sample).
+    //     Extra inRange in YCrCb ANDed onto skin_mask — tighter than the
+    //     global Chai-Ngan bounds for the specific user in the current light.
+    if (tracker->adaptive_ready) {
+        cv::Mat adaptive_mask;
+        cv::inRange(tracker->ycrcb,
+                    tracker->adaptive_low, tracker->adaptive_high,
+                    adaptive_mask);
+        cv::bitwise_and(tracker->skin_mask, adaptive_mask, tracker->skin_mask);
+    }
+
+    // 1a2. Face haar mask: subtract detected face rects. Faces are large skin
+    //      blobs that trigger the color pipeline; hand tracker doesn't want
+    //      them. Skipped silently if the cascade file wasn't found at init.
+    //      Skipped when DNN is active — YOLOv8-hand doesn't confuse face.
+    if (tracker->face_loaded && !tracker->net_loaded) {
+        cv::Mat gray;
+        cv::cvtColor(tracker->frame, gray, cv::COLOR_BGR2GRAY);
+        cv::equalizeHist(gray, gray);
+        std::vector<cv::Rect> faces;
+        tracker->face_cascade.detectMultiScale(
+            gray, faces, 1.2, 4, 0, cv::Size(60, 60));
+        for (auto &f : faces) {
+            // Expand rect a bit to cover neck/hair skin too.
+            f.x -= f.width  / 6;
+            f.y -= f.height / 8;
+            f.width  += f.width  / 3;
+            f.height += f.height / 3;
+            f &= cv::Rect(0, 0, tracker->skin_mask.cols, tracker->skin_mask.rows);
+            if (f.area() > 0) {
+                tracker->skin_mask(f).setTo(0);
+            }
+        }
+    }
+
     // 1b. Static skin-color background calibration. First CALIB_FRAMES frames,
     //     tally which pixels are classified skin. Anything that fires >70% of
     //     the time with no hand present is background (curtain, desk, mug) —
@@ -255,10 +640,12 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
         cv::bitwise_and(tracker->skin_mask, inv_bg, tracker->skin_mask);
     }
 
-    // 2. Motion mask via MOG2 — used only as scoring bonus, so a still hand
-    //    is not lost when it pauses.
-    tracker->bg_sub->apply(tracker->blurred, tracker->motion_mask, 0.005);
-    cv::threshold(tracker->motion_mask, tracker->motion_mask, 200, 255, cv::THRESH_BINARY);
+    // 2. Motion mask via MOG2 — only needed by color pipeline scoring.
+    if (!tracker->net_loaded) {
+        tracker->bg_sub->apply(tracker->blurred, tracker->motion_mask, 0.005);
+        cv::threshold(tracker->motion_mask, tracker->motion_mask,
+                      200, 255, cv::THRESH_BINARY);
+    }
 
     // 3. Clean skin mask
     cv::morphologyEx(tracker->skin_mask, tracker->skin_mask,
@@ -276,14 +663,41 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
         search_mask = tracker->combined_mask;
     }
 
-    // 5. Contour scoring — skip entirely during calibration window.
+    // 5. Detection — DNN path (Tier 1) or color contour path (fallback).
+    bool detected = false;
+    cv::Point2f palm_center(-1.0f, -1.0f);
+    float palm_radius = 0.0f;
+    cv::Rect dnn_bbox;
+    float dnn_conf = 0.0f;
+
+    if (tracker->net_loaded) {
+        detected = dnn_detect_palm(tracker, predicted,
+                                   tracker->kalman_initialized,
+                                   dnn_bbox, dnn_conf);
+        if (detected) {
+            palm_center_from_bbox(tracker, dnn_bbox, palm_center, palm_radius);
+
+            if (palm_radius < MIN_PALM_RADIUS_PX) {
+                detected = false;
+            }
+            if (detected && tracker->has_palm) {
+                float dx = palm_center.x - tracker->palm_center.x;
+                float dy = palm_center.y - tracker->palm_center.y;
+                float dist_px = std::sqrt(dx * dx + dy * dy);
+                float max_jump = std::max(tracker->palm_radius, palm_radius)
+                                 * MAX_JUMP_MULT;
+                if (dist_px > max_jump) detected = false;
+            }
+        }
+    }
+
+    // 5b. Color contour fallback (only used when DNN unavailable).
     std::vector<std::vector<cv::Point>> contours;
-    if (tracker->calib_ready) {
+    if (!tracker->net_loaded && tracker->calib_ready) {
         cv::findContours(search_mask, contours,
                          cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
     }
 
-    bool detected = false;
     double best_score = -1e18;
     std::vector<cv::Point> best_contour;
 
@@ -332,12 +746,9 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
         }
     }
 
-    // 6. Palm center via distance transform: pixel with max distance to any
-    //    boundary is always inside the palm, never in a finger.
-    cv::Point2f palm_center(-1.0f, -1.0f);
-    float palm_radius = 0.0f;
-
-    if (detected) {
+    // 6. Palm center via distance transform on best contour (color path only).
+    //    In DNN path, palm_center / palm_radius are already set from bbox.
+    if (!tracker->net_loaded && detected) {
         cv::Mat palm_mask = cv::Mat::zeros(tracker->skin_mask.size(), CV_8UC1);
         std::vector<std::vector<cv::Point>> tmp = {best_contour};
         cv::drawContours(palm_mask, tmp, 0, 255, cv::FILLED);
@@ -353,12 +764,9 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
                                   static_cast<float>(max_loc.y));
         palm_radius = static_cast<float>(max_val);
 
-        // Reject non-palm blobs (fingers-only, arm-only)
         if (palm_radius < MIN_PALM_RADIUS_PX) {
             detected = false;
         }
-
-        // Reject implausible jumps once locked
         if (detected && tracker->has_palm) {
             float dx = palm_center.x - tracker->palm_center.x;
             float dy = palm_center.y - tracker->palm_center.y;
@@ -412,6 +820,9 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
             tracker->lost_frames = 0;
             *x = (palm_center.x / static_cast<float>(W)) * 100.0f;
             *y = (palm_center.y / static_cast<float>(H)) * 100.0f;
+
+            // Tier 2: sample palm YCrCb to build per-user adaptive skin bounds.
+            update_adaptive_skin(tracker, palm_center, palm_radius);
         }
     } else {
         tracker->lost_frames++;
@@ -440,12 +851,22 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
                        cv::Scalar(0, 255, 0), 2);
             cv::circle(preview_frame, palm_center, 4,
                        cv::Scalar(0, 255, 255), -1);
-            cv::putText(preview_frame, "Palm locked", cv::Point(10, 26),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.7,
+            char buf[64];
+            if (tracker->net_loaded) {
+                std::snprintf(buf, sizeof(buf), "Palm locked  DNN %.2f", dnn_conf);
+            } else {
+                std::snprintf(buf, sizeof(buf), "Palm locked  COLOR%s",
+                              tracker->adaptive_ready ? "+adapt" : "");
+            }
+            cv::putText(preview_frame, buf, cv::Point(10, 26),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.6,
                         cv::Scalar(0, 255, 0), 2, cv::LINE_AA);
         } else {
-            cv::putText(preview_frame, "Searching...", cv::Point(10, 26),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.7,
+            const char *msg = tracker->net_loaded
+                ? "Searching... (DNN)"
+                : "Searching... (COLOR)";
+            cv::putText(preview_frame, msg, cv::Point(10, 26),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.6,
                         cv::Scalar(0, 80, 255), 2, cv::LINE_AA);
         }
 

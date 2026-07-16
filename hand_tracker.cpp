@@ -19,10 +19,15 @@ struct HandTracker {
     cv::Mat frame;
     cv::Mat blurred;
     cv::Mat ycrcb;
+    cv::Mat hsv;
+    cv::Mat skin_mask_y;
+    cv::Mat skin_mask_h;
     cv::Mat skin_mask;
     cv::Mat motion_mask;
     cv::Mat combined_mask;
     cv::Mat preview_rgb;
+    cv::Mat bg_skin_mask;        // permanent static skin-colored background (curtain, desk)
+    cv::Mat bg_hit_count;        // int32 accumulator during calibration
     cv::Ptr<cv::BackgroundSubtractorMOG2> bg_sub;
     cv::KalmanFilter kf;
     bool kalman_initialized = false;
@@ -36,25 +41,51 @@ struct HandTracker {
     float palm_radius = 0.0f;
     bool  has_palm = false;
     int   lost_frames = 0;
+
+    int  calib_frames_done = 0;
+    bool calib_ready = false;
+
+    // Stale-lock detection: if palm sits still too long, drop and re-acquire.
+    cv::Point2f last_moved_center = cv::Point2f(-1.0f, -1.0f);
+    int stale_frames = 0;
 };
 
-// YCrCb skin bounds — Chai & Ngan (1999), robust across lighting and skin tones
-// because luma (Y) is decoupled from chroma (Cr, Cb).
+// YCrCb skin bounds — Chai & Ngan (1999).
 static constexpr int SKIN_CR_MIN = 133;
 static constexpr int SKIN_CR_MAX = 173;
 static constexpr int SKIN_CB_MIN = 77;
 static constexpr int SKIN_CB_MAX = 127;
 
+// HSV skin bounds: two hue ranges (0-20 and 160-180), and a hard SATURATION CAP
+// at 150. Pure red curtains / saturated red objects sit at S > 180 and are
+// rejected here — skin virtually never exceeds S=150.
+static constexpr int SKIN_H1_MIN = 0;
+static constexpr int SKIN_H1_MAX = 20;
+static constexpr int SKIN_H2_MIN = 160;
+static constexpr int SKIN_H2_MAX = 180;
+static constexpr int SKIN_S_MIN  = 30;
+static constexpr int SKIN_S_MAX  = 150;
+static constexpr int SKIN_V_MIN  = 60;
+static constexpr int SKIN_V_MAX  = 255;
+
 static constexpr double MIN_CONTOUR_AREA   = 1500.0;
-static constexpr double MAX_CONTOUR_AREA   = 90000.0;
+static constexpr double MAX_CONTOUR_AREA   = 250000.0;   // allow palm-over-camera
 static constexpr double MIN_SOLIDITY       = 0.55;
 static constexpr double MAX_ASPECT_RATIO   = 3.0;
-static constexpr float  MIN_PALM_RADIUS_PX = 14.0f;   // reject fingers-only / arm-only blobs
+static constexpr float  MIN_PALM_RADIUS_PX = 14.0f;
 static constexpr int    GRACE_FRAMES       = 8;
-static constexpr double DIST_PENALTY       = 6.0;    // per-pixel penalty vs Kalman prediction
-static constexpr double MOTION_BONUS       = 2.5;    // scoring bonus for motion overlap
-static constexpr float  SEARCH_RADIUS_MULT = 5.0f;   // ROI = k * palm radius
-static constexpr float  MAX_JUMP_MULT      = 6.0f;   // reject palm jumps > k * palm radius
+static constexpr double DIST_PENALTY       = 6.0;
+static constexpr double MOTION_BONUS       = 5.0;        // stronger tiebreaker
+static constexpr float  SEARCH_RADIUS_MULT = 5.0f;
+static constexpr float  MAX_JUMP_MULT      = 6.0f;
+
+// Static-skin-background calibration.
+static constexpr int    CALIB_FRAMES       = 45;
+static constexpr double CALIB_HIT_RATIO    = 0.70;
+
+// Stale-lock escape.
+static constexpr int    STALE_MAX_FRAMES   = 45;
+static constexpr float  STALE_MOVE_EPS_PX  = 4.0f;
 
 static bool open_camera_index(HandTracker *tracker, int camera_index) {
     if (!tracker->capture.open(camera_index, cv::CAP_ANY)) {
@@ -135,6 +166,12 @@ HandTracker* hand_tracker_init(SDL_Renderer *renderer) {
     // MOG2 with shadow detection off — we only need a binary motion mask.
     tracker->bg_sub = cv::createBackgroundSubtractorMOG2(500, 25.0, false);
 
+    // Allocate calibration accumulators sized to the actual frame.
+    tracker->bg_hit_count = cv::Mat::zeros(tracker->frame_height,
+                                          tracker->frame_width, CV_32SC1);
+    tracker->bg_skin_mask = cv::Mat::zeros(tracker->frame_height,
+                                          tracker->frame_width, CV_8UC1);
+
     if (renderer) {
         tracker->preview_texture = SDL_CreateTexture(
             renderer,
@@ -170,13 +207,53 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
         predicted = cv::Point2f(p.at<float>(0), p.at<float>(1));
     }
 
-    // 1. Skin mask in YCrCb (robust to lighting shifts)
+    // 1. Skin mask = YCrCb-skin AND HSV-skin. HSV saturation cap kills
+    //    pure/saturated red (curtains, red mug) which fools YCrCb alone.
     cv::GaussianBlur(tracker->frame, tracker->blurred, cv::Size(5, 5), 0.0);
+
     cv::cvtColor(tracker->blurred, tracker->ycrcb, cv::COLOR_BGR2YCrCb);
     cv::inRange(tracker->ycrcb,
                 cv::Scalar(0,   SKIN_CR_MIN, SKIN_CB_MIN),
                 cv::Scalar(255, SKIN_CR_MAX, SKIN_CB_MAX),
-                tracker->skin_mask);
+                tracker->skin_mask_y);
+
+    cv::cvtColor(tracker->blurred, tracker->hsv, cv::COLOR_BGR2HSV);
+    cv::Mat hsv1, hsv2;
+    cv::inRange(tracker->hsv,
+                cv::Scalar(SKIN_H1_MIN, SKIN_S_MIN, SKIN_V_MIN),
+                cv::Scalar(SKIN_H1_MAX, SKIN_S_MAX, SKIN_V_MAX), hsv1);
+    cv::inRange(tracker->hsv,
+                cv::Scalar(SKIN_H2_MIN, SKIN_S_MIN, SKIN_V_MIN),
+                cv::Scalar(SKIN_H2_MAX, SKIN_S_MAX, SKIN_V_MAX), hsv2);
+    cv::bitwise_or(hsv1, hsv2, tracker->skin_mask_h);
+
+    cv::bitwise_and(tracker->skin_mask_y, tracker->skin_mask_h, tracker->skin_mask);
+
+    // 1b. Static skin-color background calibration. First CALIB_FRAMES frames,
+    //     tally which pixels are classified skin. Anything that fires >70% of
+    //     the time with no hand present is background (curtain, desk, mug) —
+    //     mark it permanent and subtract from every future frame.
+    if (!tracker->calib_ready) {
+        cv::Mat hits;
+        tracker->skin_mask.convertTo(hits, CV_32SC1, 1.0 / 255.0);
+        tracker->bg_hit_count += hits;
+        tracker->calib_frames_done++;
+        if (tracker->calib_frames_done >= CALIB_FRAMES) {
+            int threshold = static_cast<int>(CALIB_FRAMES * CALIB_HIT_RATIO);
+            cv::compare(tracker->bg_hit_count, threshold,
+                        tracker->bg_skin_mask, cv::CMP_GE);
+            cv::dilate(tracker->bg_skin_mask, tracker->bg_skin_mask,
+                       cv::Mat(), cv::Point(-1, -1), 2);
+            tracker->calib_ready = true;
+            int bg_px = cv::countNonZero(tracker->bg_skin_mask);
+            std::printf("Skin-background calibrated: %d px masked out\n", bg_px);
+        }
+    } else {
+        // Permanent subtraction of static skin-colored background.
+        cv::Mat inv_bg;
+        cv::bitwise_not(tracker->bg_skin_mask, inv_bg);
+        cv::bitwise_and(tracker->skin_mask, inv_bg, tracker->skin_mask);
+    }
 
     // 2. Motion mask via MOG2 — used only as scoring bonus, so a still hand
     //    is not lost when it pauses.
@@ -199,9 +276,12 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
         search_mask = tracker->combined_mask;
     }
 
-    // 5. Contour scoring
+    // 5. Contour scoring — skip entirely during calibration window.
     std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(search_mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    if (tracker->calib_ready) {
+        cv::findContours(search_mask, contours,
+                         cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    }
 
     bool detected = false;
     double best_score = -1e18;
@@ -300,25 +380,61 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
             palm_center = cv::Point2f(est.at<float>(0), est.at<float>(1));
         }
 
-        tracker->palm_center = palm_center;
-        tracker->palm_radius = palm_radius;
-        tracker->has_palm    = true;
-        tracker->lost_frames = 0;
+        // Stale-lock detection: if the "palm" hasn't moved for a long time,
+        // it's probably a false-positive static object we locked onto. Drop
+        // the lock so the next frame can re-acquire from scratch.
+        if (tracker->last_moved_center.x < 0.0f) {
+            tracker->last_moved_center = palm_center;
+            tracker->stale_frames = 0;
+        } else {
+            float dx = palm_center.x - tracker->last_moved_center.x;
+            float dy = palm_center.y - tracker->last_moved_center.y;
+            if (std::sqrt(dx * dx + dy * dy) > STALE_MOVE_EPS_PX) {
+                tracker->last_moved_center = palm_center;
+                tracker->stale_frames = 0;
+            } else {
+                tracker->stale_frames++;
+            }
+        }
 
-        *x = (palm_center.x / static_cast<float>(W)) * 100.0f;
-        *y = (palm_center.y / static_cast<float>(H)) * 100.0f;
+        if (tracker->stale_frames > STALE_MAX_FRAMES) {
+            tracker->has_palm         = false;
+            tracker->kalman_initialized = false;
+            tracker->stale_frames     = 0;
+            tracker->last_moved_center = cv::Point2f(-1.0f, -1.0f);
+            detected = false;
+            *x = 50.0f;
+            *y = 50.0f;
+        } else {
+            tracker->palm_center = palm_center;
+            tracker->palm_radius = palm_radius;
+            tracker->has_palm    = true;
+            tracker->lost_frames = 0;
+            *x = (palm_center.x / static_cast<float>(W)) * 100.0f;
+            *y = (palm_center.y / static_cast<float>(H)) * 100.0f;
+        }
     } else {
         tracker->lost_frames++;
         if (tracker->lost_frames > GRACE_FRAMES) {
             tracker->has_palm         = false;
             tracker->kalman_initialized = false;
+            tracker->stale_frames     = 0;
+            tracker->last_moved_center = cv::Point2f(-1.0f, -1.0f);
         }
     }
 
     // 8. Preview — palm circle only, no finger/arm annotation.
     if (tracker->preview_texture) {
         cv::Mat preview_frame = tracker->frame.clone();
-        if (detected) {
+        if (!tracker->calib_ready) {
+            char buf[96];
+            std::snprintf(buf, sizeof(buf),
+                          "Calibrating background %d/%d - keep hand OUT of view",
+                          tracker->calib_frames_done, CALIB_FRAMES);
+            cv::putText(preview_frame, buf, cv::Point(10, 26),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.55,
+                        cv::Scalar(0, 200, 255), 2, cv::LINE_AA);
+        } else if (detected) {
             cv::circle(preview_frame, palm_center,
                        static_cast<int>(palm_radius),
                        cv::Scalar(0, 255, 0), 2);

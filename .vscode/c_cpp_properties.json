@@ -1,0 +1,33 @@
+{
+    "configurations": [
+        {
+            "name": "Win32-MSYS2-UCRT64",
+            "compilerPath": "C:/msys64/ucrt64/bin/g++.exe",
+            "intelliSenseMode": "windows-gcc-x64",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "C:/msys64/ucrt64/include",
+                "C:/msys64/ucrt64/include/opencv4",
+                "C:/msys64/ucrt64/include/SDL2",
+                "C:/msys64/ucrt64/include/freetype2",
+                "C:/msys64/ucrt64/include/libpng16",
+                "C:/msys64/ucrt64/include/harfbuzz",
+                "C:/msys64/ucrt64/include/glib-2.0",
+                "C:/msys64/ucrt64/lib/glib-2.0/include"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}",
+                    "C:/msys64/ucrt64/include",
+                    "C:/msys64/ucrt64/include/opencv4",
+                    "C:/msys64/ucrt64/include/SDL2"
+                ]
+            },
+            "defines": []
+        }
+    ],
+    "version": 4
+}

@@ -6,7 +6,7 @@ The player paddle is controlled by your hand position in front of a camera. The 
 
 ## Core Features
 
-- Real-time hand tracking from webcam input (OpenCV, HSV skin segmentation, contour filtering)
+- Real-time hand tracking from webcam input: optional YOLOv8 DNN palm detector, YCrCb + HSV skin segmentation, MOG2 motion, Kalman filter with grace-period coast, adaptive per-user skin bounds, face-cascade masking, static skin-background subtraction
 - Playable Pong-style tennis loop with gravity, collisions, spin, and particle effects
 - Four AI difficulty modes: Easy, Medium, Hard, Extreme
 - Modern widescreen HUD with a dedicated hand-tracking diagnostics panel
@@ -130,6 +130,10 @@ HAND_TENNIS_CAMERA_INDEX=1 ./build/hand_tennis
 - If no camera index is provided, indices 0 through 9 are probed automatically.
 - Camera frames are processed at 640x480, then converted to normalized 0-100 coordinates.
 - Hand confidence ramps up/down over time and gates paddle control.
+- Camera auto-exposure and auto-white-balance are locked at startup to keep skin hue stable frame-to-frame. Some backends silently ignore the request.
+- On brief detection misses (up to 8 frames ≈ 0.27 s at 30 FPS), the tracker coasts on the Kalman prediction so the paddle keeps a smooth trajectory instead of dropping out.
+- Optional DNN palm detector: drop a YOLOv8n-hand ONNX at `models/palm.onnx` (or point `HAND_TENNIS_MODEL` at it). Falls back to color pipeline if missing.
+- Optional face masking: drop `haarcascade_frontalface_default.xml` at `models/` (or point `HAND_TENNIS_HAAR` at it) to prevent face lock-on in the color path.
 
 ## Gameplay Model
 
@@ -166,7 +170,9 @@ Easy mode also adds random targeting error to feel less robotic.
 
 - Improve lighting and reduce harsh shadows.
 - Keep your hand in frame with clear contrast from background.
-- Adjust HSV thresholds in hand_tracker.cpp for your environment/skin tone.
+- Adjust HSV / YCrCb thresholds in `hand_tracker.cpp` for your environment/skin tone, or trigger the recalibration path so a new static skin-background pass runs with your hand out of view.
+- For guaranteed robustness under changing light, install the YOLOv8n-hand ONNX model — the color pipeline is only a fallback.
+- If skin hue still drifts frame-to-frame, the camera backend ignored the auto-exposure/auto-WB lock. Force the DirectShow backend or set exposure manually in your camera driver.
 
 ### Build cannot find dependencies
 

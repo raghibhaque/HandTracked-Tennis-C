@@ -122,6 +122,18 @@ static bool open_camera_index(HandTracker *tracker, int camera_index) {
     tracker->capture.set(cv::CAP_PROP_FOURCC,
                         cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
 
+    // Lock camera auto-exposure and auto-white-balance. Auto modes drift skin
+    // hue frame-to-frame under changing light, breaking every downstream color
+    // threshold. Values are backend-dependent; try both DirectShow (0.25=manual,
+    // 0.75=auto) and V4L2 (1=manual, 3=auto) conventions. Failures are silent —
+    // some backends reject the set but the property is a no-op, not fatal.
+    tracker->capture.set(cv::CAP_PROP_AUTO_EXPOSURE, 0.25);
+    tracker->capture.set(cv::CAP_PROP_AUTO_WB, 0);
+    // Nudge exposure slightly bright so palm silhouette is well-lit even in
+    // dim rooms. Manual value range varies wildly by camera; -6 is a common
+    // mid-bright value on UVC webcams.
+    tracker->capture.set(cv::CAP_PROP_EXPOSURE, -6);
+
     for (int attempt = 0; attempt < 50; ++attempt) {
         tracker->capture.read(tracker->frame);
         if (!tracker->frame.empty()) {
@@ -826,6 +838,26 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
         }
     } else {
         tracker->lost_frames++;
+
+        // Coast on Kalman prediction during grace period. Game receives a
+        // smooth predicted position instead of a dropout, so brief occlusions
+        // and single-frame detection misses become invisible to the paddle.
+        // Only coast if we already had a lock — never fabricate a first lock.
+        if (tracker->has_palm && tracker->kalman_initialized &&
+            tracker->lost_frames <= GRACE_FRAMES &&
+            predicted.x >= 0.0f && predicted.y >= 0.0f) {
+
+            float px = std::max(0.0f, std::min(static_cast<float>(W - 1), predicted.x));
+            float py = std::max(0.0f, std::min(static_cast<float>(H - 1), predicted.y));
+
+            tracker->palm_center = cv::Point2f(px, py);
+            palm_center = cv::Point2f(px, py);
+            palm_radius = tracker->palm_radius;
+            *x = (px / static_cast<float>(W)) * 100.0f;
+            *y = (py / static_cast<float>(H)) * 100.0f;
+            detected = true;
+        }
+
         if (tracker->lost_frames > GRACE_FRAMES) {
             tracker->has_palm         = false;
             tracker->kalman_initialized = false;

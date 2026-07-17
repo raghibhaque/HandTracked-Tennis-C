@@ -28,8 +28,8 @@ set(SOURCES
     rendering.c
 )
 
-# Create executable
-add_executable(hand_tennis ${SOURCES})
+# Create executable — WIN32 = GUI subsystem, no console window
+add_executable(hand_tennis WIN32 ${SOURCES})
 
 # Link libraries
 target_link_libraries(hand_tennis

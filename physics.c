@@ -52,16 +52,16 @@ void physics_update_ball(GameState *state) {
     }
     
     // Ball out of bounds (left/right)
-    // Player is on RIGHT; opponent is on LEFT.
-    // Ball exits left  → opponent missed → player scores.
-    // Ball exits right → player missed  → opponent scores.
+    // Player is on LEFT; opponent is on RIGHT.
+    // Ball exits left  = player missed  = opponent scores.
+    // Ball exits right = opponent missed = player scores.
     if (ball->x < COURT_X - 50) {
-        state->player_score++;
+        state->opponent_score++;
         game_reset_ball(state);
         return;
     }
     if (ball->x > COURT_X + COURT_WIDTH + 50) {
-        state->opponent_score++;
+        state->player_score++;
         game_reset_ball(state);
         return;
     }
@@ -71,10 +71,10 @@ void physics_update_ball(GameState *state) {
 void physics_check_paddle_collisions(GameState *state, Particle *particles, int *particle_count) {
     Ball *ball = &state->ball;
     
-    // Player paddle collision (player on RIGHT — only collide when ball moving RIGHT toward player)
-    if (check_ball_paddle_collision(ball, &state->player) && ball->vx > 0) {
-        // Place ball to the left face of player paddle
-        ball->x = state->player.x - ball->radius;
+    // Player paddle collision (player on LEFT — only collide when ball moving LEFT toward player)
+    if (check_ball_paddle_collision(ball, &state->player) && ball->vx < 0) {
+        // Place ball to the right face of player paddle
+        ball->x = state->player.x + state->player.width + ball->radius;
         ball->vx = -ball->vx;
 
         // Add spin based on paddle velocity
@@ -106,10 +106,10 @@ void physics_check_paddle_collisions(GameState *state, Particle *particles, int 
         }
     }
 
-    // Opponent paddle collision (opponent on LEFT — only collide when ball moving LEFT toward opponent)
-    if (check_ball_paddle_collision(ball, &state->opponent) && ball->vx < 0) {
-        // Place ball to the right face of opponent paddle
-        ball->x = state->opponent.x + state->opponent.width + ball->radius;
+    // Opponent paddle collision (opponent on RIGHT — only collide when ball moving RIGHT toward opponent)
+    if (check_ball_paddle_collision(ball, &state->opponent) && ball->vx > 0) {
+        // Place ball to the left face of opponent paddle
+        ball->x = state->opponent.x - ball->radius;
         ball->vx = -ball->vx;
 
         // Add spin based on paddle velocity

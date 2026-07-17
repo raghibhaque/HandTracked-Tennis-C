@@ -288,14 +288,14 @@ void rendering_draw_game(Renderer *r, GameState *state, const char *difficulty_n
     draw_text(r->renderer, r->ui_font, "ESC: quit   SPACE: restart",
               COURT_X + 6, 38, color_rgba(146, 170, 206, 180));
 
-    // Player paddle (right, GREEN)
+    // Player paddle (left, GREEN)
     draw_glow_rect(r,
                    (SDL_Rect){(int)state->player.x, (int)state->player.y,
                                state->player.width, state->player.height},
                    color_rgba(41, 247, 154, 255),
                    color_rgba(41, 247, 154, 40));
 
-    // Opponent paddle (left, BLUE)
+    // Opponent paddle (right, BLUE)
     draw_glow_rect(r,
                    (SDL_Rect){(int)state->opponent.x, (int)state->opponent.y,
                                state->opponent.width, state->opponent.height},

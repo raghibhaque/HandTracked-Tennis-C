@@ -22,15 +22,15 @@ GameState* game_init(Difficulty difficulty) {
     state->fps = 0.0f;
     state->particle_count = 0;
     
-    // Initialize player paddle (right side)
-    state->player.x = COURT_X + COURT_WIDTH - PADDLE_WIDTH - 10;
+    // Initialize player paddle (left side)
+    state->player.x = COURT_X + 10;
     state->player.y = COURT_Y + COURT_HEIGHT / 2 - PADDLE_HEIGHT / 2;
     state->player.width = PADDLE_WIDTH;
     state->player.height = PADDLE_HEIGHT;
     state->player.vy = 0;
-    
-    // Initialize opponent paddle (left side)
-    state->opponent.x = COURT_X + 10;
+
+    // Initialize opponent paddle (right side)
+    state->opponent.x = COURT_X + COURT_WIDTH - PADDLE_WIDTH - 10;
     state->opponent.y = COURT_Y + COURT_HEIGHT / 2 - PADDLE_HEIGHT / 2;
     state->opponent.width = PADDLE_WIDTH;
     state->opponent.height = PADDLE_HEIGHT;

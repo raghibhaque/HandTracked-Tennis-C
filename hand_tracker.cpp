@@ -69,9 +69,15 @@ struct HandTracker {
     bool  pinching = false;
     float pinch_ratio = 1.0f;             // 0.0 = fully pinched, 1.0+ = open
 
-    // Tier 2: haar face cascade (used only in color fallback path).
+    // Tier 2: haar face cascade. Used both to mask the face out of the color
+    // skin mask (color path) and to veto DNN palm bboxes that overlap a face
+    // (DNN path). Face rects are refreshed every FACE_REFRESH frames to keep
+    // per-frame cost low.
     cv::CascadeClassifier face_cascade;
     bool face_loaded = false;
+    std::vector<cv::Rect> face_rects;
+    int face_frame_counter = 0;
+    static constexpr int FACE_REFRESH = 5;
 
     // Tier 2: adaptive per-user skin bounds in YCrCb (mean +- 3sigma per
     // channel). Cheap to apply (single inRange) and tighter than the global
@@ -119,15 +125,13 @@ static constexpr float  MAX_JUMP_MULT      = 6.0f;
 static constexpr int    CALIB_FRAMES       = 45;
 static constexpr double CALIB_HIT_RATIO    = 0.70;
 
-// Stale-lock escape. Two thresholds:
-//   - Before adaptive skin locks (warm-up), trust nothing that sits still for
-//     ~1.5 s — could be a lamp or curtain false positive.
-//   - After adaptive skin is locked, the color model is user-specific and a
-//     held-still hand is far more plausible than a false positive. Relax to
-//     ~5 s so players can rest between rallies without dropping the lock.
-static constexpr int    STALE_MAX_FRAMES        = 45;
-static constexpr int    STALE_MAX_FRAMES_LOCKED = 150;
-static constexpr float  STALE_MOVE_EPS_PX       = 4.0f;
+// Stale-lock escape. If the "palm" sits within ~4 px for 45 frames it is
+// almost certainly a static false positive (lamp, curtain, forehead patch);
+// drop the lock so the next frame can re-acquire. Uniform threshold whether
+// adaptive skin is ready or not — the relaxed variant let face/curtain locks
+// linger for seconds instead of ~1.5 s.
+static constexpr int    STALE_MAX_FRAMES   = 45;
+static constexpr float  STALE_MOVE_EPS_PX  = 4.0f;
 
 static bool open_camera_index(HandTracker *tracker, int camera_index) {
     if (!tracker->capture.open(camera_index, cv::CAP_ANY)) {
@@ -555,17 +559,31 @@ static bool dnn_detect_palm(HandTracker *t,
         return false;
     }
 
-    // Confidence threshold adapts to lock state:
-    //   - Locked and detecting: strict 0.35 (reject weak/duplicate proposals).
-    //   - Warm-up or long-lost: relaxed to 0.20 so the tracker can re-acquire
-    //     a partially occluded or oddly-oriented hand instead of sitting at
-    //     zero detections until the user waves harder.
-    float conf_th = (t->has_palm || t->lost_frames < 30) ? 0.35f : 0.20f;
+    // Strict confidence threshold. A relaxed threshold on cold start pulls in
+    // false positives (faces, lamps, hand-shaped shadows) before the tracker
+    // has any prior to reject them, and the resulting lock is hard to break.
     auto dets = yolov8_decode_single_class(
         output, scale, pad_x, pad_y,
         t->frame.cols, t->frame.rows,
-        conf_th, /*iou_th=*/0.45f);
+        /*conf_th=*/0.35f, /*iou_th=*/0.45f);
 
+    // Reject any detection that overlaps a detected face by >40% of its area.
+    // YOLOv8-palm occasionally fires on chins, cheeks, and forehead patches;
+    // the face cascade is much more reliable at spotting those, so we use it
+    // as a veto even when the DNN path is otherwise face-unaware.
+    if (!dets.empty() && !t->face_rects.empty()) {
+        std::vector<DnnDetection> filtered;
+        filtered.reserve(dets.size());
+        for (const auto &d : dets) {
+            bool on_face = false;
+            for (const auto &f : t->face_rects) {
+                cv::Rect inter = d.box & f;
+                if (inter.area() > 0.4 * d.box.area()) { on_face = true; break; }
+            }
+            if (!on_face) filtered.push_back(d);
+        }
+        dets.swap(filtered);
+    }
     if (dets.empty()) return false;
 
     // Pick highest confidence, but prefer detections near Kalman prediction
@@ -858,26 +876,35 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
         cv::bitwise_and(tracker->skin_mask, adaptive_mask, tracker->skin_mask);
     }
 
-    // 1a2. Face haar mask: subtract detected face rects. Faces are large skin
-    //      blobs that trigger the color pipeline; hand tracker doesn't want
-    //      them. Skipped silently if the cascade file wasn't found at init.
-    //      Skipped when DNN is active — YOLOv8-hand doesn't confuse face.
-    if (tracker->face_loaded && !tracker->net_loaded) {
-        cv::Mat gray;
-        cv::cvtColor(tracker->frame, gray, cv::COLOR_BGR2GRAY);
-        cv::equalizeHist(gray, gray);
-        std::vector<cv::Rect> faces;
-        tracker->face_cascade.detectMultiScale(
-            gray, faces, 1.2, 4, 0, cv::Size(60, 60));
-        for (auto &f : faces) {
-            // Expand rect a bit to cover neck/hair skin too.
-            f.x -= f.width  / 6;
-            f.y -= f.height / 8;
-            f.width  += f.width  / 3;
-            f.height += f.height / 3;
-            f &= cv::Rect(0, 0, tracker->skin_mask.cols, tracker->skin_mask.rows);
-            if (f.area() > 0) {
-                tracker->skin_mask(f).setTo(0);
+    // 1a2. Face haar detection: refresh face_rects every FACE_REFRESH frames.
+    //      Used both to mask the face out of the color skin mask and as a veto
+    //      for DNN palm bboxes that overlap a face (YOLOv8-palm sometimes
+    //      fires on chins/foreheads).
+    if (tracker->face_loaded) {
+        tracker->face_frame_counter++;
+        if (tracker->face_frame_counter >= HandTracker::FACE_REFRESH) {
+            cv::Mat gray;
+            cv::cvtColor(tracker->frame, gray, cv::COLOR_BGR2GRAY);
+            cv::equalizeHist(gray, gray);
+            tracker->face_rects.clear();
+            tracker->face_cascade.detectMultiScale(
+                gray, tracker->face_rects, 1.2, 4, 0, cv::Size(60, 60));
+            // Expand each rect to cover neck/hair too.
+            for (auto &f : tracker->face_rects) {
+                f.x -= f.width  / 6;
+                f.y -= f.height / 8;
+                f.width  += f.width  / 3;
+                f.height += f.height / 3;
+                f &= cv::Rect(0, 0, tracker->frame.cols, tracker->frame.rows);
+            }
+            tracker->face_frame_counter = 0;
+        }
+
+        // Only subtract from the color skin mask when we're on the color path.
+        if (!tracker->net_loaded) {
+            for (const auto &f : tracker->face_rects) {
+                cv::Rect fc = f & cv::Rect(0, 0, tracker->skin_mask.cols, tracker->skin_mask.rows);
+                if (fc.area() > 0) tracker->skin_mask(fc).setTo(0);
             }
         }
     }
@@ -1088,10 +1115,7 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
             }
         }
 
-        int stale_limit = tracker->adaptive_ready
-            ? STALE_MAX_FRAMES_LOCKED
-            : STALE_MAX_FRAMES;
-        if (tracker->stale_frames > stale_limit) {
+        if (tracker->stale_frames > STALE_MAX_FRAMES) {
             tracker->has_palm         = false;
             tracker->kalman_initialized = false;
             tracker->stale_frames     = 0;

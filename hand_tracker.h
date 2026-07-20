@@ -27,6 +27,13 @@ SDL_Texture* hand_tracker_get_preview_texture(HandTracker *tracker);
 // tracker thread; expected to be called from the SDL event loop.
 void hand_tracker_recalibrate(HandTracker *tracker);
 
+// Load persisted YCrCb calibration bounds from disk if available.
+// Called automatically by hand_tracker_init(); exposed for manual reloads.
+bool hand_tracker_load_calibration(HandTracker *tracker);
+
+// Save current adaptive YCrCb bounds to disk. No-op if calibration is not ready.
+bool hand_tracker_save_calibration(HandTracker *tracker);
+
 // Release all resources.
 void hand_tracker_cleanup(HandTracker *tracker);
 

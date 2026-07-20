@@ -1,4 +1,5 @@
 #include "hand_tracker.h"
+#include "calib.h"
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/video/background_segm.hpp>
@@ -279,7 +280,38 @@ HandTracker* hand_tracker_init(SDL_Renderer *renderer) {
 
     std::printf("Hand tracker initialized: %dx%d (YCrCb + MOG2 + Kalman)\n",
                 tracker->frame_width, tracker->frame_height);
+
+    // Attempt to load persisted YCrCb calibration bounds so the user does not
+    // need to recalibrate every launch.
+    hand_tracker_load_calibration(tracker);
+
     return tracker;
+}
+
+bool hand_tracker_load_calibration(HandTracker *tracker) {
+    if (!tracker) return false;
+    Calibration c;
+    if (!calib_load(&c)) return false;
+    tracker->adaptive_low  = cv::Scalar(c.y_lo, c.cr_lo, c.cb_lo);
+    tracker->adaptive_high = cv::Scalar(c.y_hi, c.cr_hi, c.cb_hi);
+    tracker->adaptive_ready = true;
+    std::printf("[calib] loaded %s (Y %.0f-%.0f Cr %.0f-%.0f Cb %.0f-%.0f)\n",
+                calib_path(),
+                tracker->adaptive_low[0], tracker->adaptive_high[0],
+                tracker->adaptive_low[1], tracker->adaptive_high[1],
+                tracker->adaptive_low[2], tracker->adaptive_high[2]);
+    return true;
+}
+
+bool hand_tracker_save_calibration(HandTracker *tracker) {
+    if (!tracker || !tracker->adaptive_ready) return false;
+    Calibration c = {
+        (int)tracker->adaptive_low[0],  (int)tracker->adaptive_low[1],  (int)tracker->adaptive_low[2],
+        (int)tracker->adaptive_high[0], (int)tracker->adaptive_high[1], (int)tracker->adaptive_high[2],
+    };
+    if (!calib_save(&c)) return false;
+    std::printf("[calib] saved %s\n", calib_path());
+    return true;
 }
 
 // Letterbox to a square target, preserving aspect, padding with gray.
@@ -524,6 +556,7 @@ static void update_adaptive_skin(HandTracker *t, const cv::Point2f &center,
                     t->adaptive_low[0], t->adaptive_high[0],
                     t->adaptive_low[1], t->adaptive_high[1],
                     t->adaptive_low[2], t->adaptive_high[2]);
+        hand_tracker_save_calibration(t);
     }
 }
 

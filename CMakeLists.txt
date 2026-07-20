@@ -26,6 +26,7 @@ set(SOURCES
     physics.c
     ai_opponent.c
     rendering.c
+    calib.c
 )
 
 # Create executable — WIN32 = GUI subsystem, no console window

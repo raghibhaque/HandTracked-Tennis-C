@@ -16,7 +16,7 @@ typedef struct {
 
 Renderer* rendering_init(void);
 SDL_Renderer* rendering_get_sdl_renderer(Renderer *r);
-void rendering_draw_game(Renderer *r, GameState *state, const char *difficulty_name, HandTracker *tracker);
+void rendering_draw_game(Renderer *r, GameState *state, const char *difficulty_name, HandTracker *tracker, bool calib_mode, int calib_countdown);
 void rendering_cleanup(Renderer *r);
 
 const char* ai_get_difficulty_name(Difficulty difficulty);
@@ -40,7 +40,8 @@ void print_usage(void) {
     printf("  - Move your hand up/down to move the paddle\n");
     printf("  - Green indicator = hand detected\n");
     printf("  - Red indicator = hand not detected\n\n");
-    printf("Press ESC to quit, SPACE to restart after game over\n\n");
+    printf("Press ESC to quit, SPACE to restart after game over\n");
+    printf("Press C to open the calibration screen, ENTER to capture skin bounds\n\n");
 }
 
 typedef struct {
@@ -358,6 +359,8 @@ int main(int argc, char *argv[]) {
     
     // Main game loop
     bool running = true;
+    bool calib_mode = false;
+    int calib_countdown = 0;
     uint32_t last_time = SDL_GetTicks();
     uint32_t frame_time = 0;
     uint32_t frame_count_fps = 0;
@@ -399,7 +402,17 @@ int main(int argc, char *argv[]) {
                     break;
                 case SDL_KEYDOWN:
                     if (event.key.keysym.sym == SDLK_ESCAPE) {
-                        running = false;
+                        if (calib_mode) {
+                            calib_mode = false;
+                            calib_countdown = 0;
+                        } else {
+                            running = false;
+                        }
+                    } else if (event.key.keysym.sym == SDLK_c) {
+                        calib_mode = !calib_mode;
+                        calib_countdown = 0;
+                    } else if (event.key.keysym.sym == SDLK_RETURN && calib_mode) {
+                        calib_countdown = 90;  // ~1.5s at 60 FPS
                     } else if (event.key.keysym.sym == SDLK_SPACE && game_state->game_over) {
                         // Restart game (preserve current mode)
                         GameMode current_mode = game_state->mode;
@@ -415,16 +428,27 @@ int main(int argc, char *argv[]) {
         // Update hand tracking
         Hand hand_input = {0};
         hand_input.detected = hand_tracker_detect(hand_tracker, &hand_input.x, &hand_input.y);
-        
-        // Update game
-        game_update(game_state, &hand_input);
+
+        // Countdown to a calibration capture
+        if (calib_mode && calib_countdown > 0) {
+            calib_countdown--;
+            if (calib_countdown == 0) {
+                hand_tracker_calibrate_from_last_frame(hand_tracker, 0.35f, 0.30f, 0.30f, 0.40f);
+                calib_mode = false;
+            }
+        }
+
+        // Freeze game state while calibrating so the ball does not slip away
+        if (!calib_mode) {
+            game_update(game_state, &hand_input);
+        }
         
         // Render
         rendering_draw_game(renderer, game_state,
                            difficulty == DIFFICULTY_EASY ? "Easy" :
                            difficulty == DIFFICULTY_MEDIUM ? "Medium" :
                            difficulty == DIFFICULTY_HARD ? "Hard" : "Extreme",
-                           hand_tracker);
+                           hand_tracker, calib_mode, calib_countdown);
     }
     
     printf("\n[Cleanup] Shutting down...\n");

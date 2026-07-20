@@ -252,7 +252,70 @@ void rendering_draw_circle(Renderer *r, int cx, int cy, int radius, uint8_t red,
     }
 }
 
-void rendering_draw_game(Renderer *r, GameState *state, const char *difficulty_name, HandTracker *tracker) {
+// Percent of camera-preview area that the calibration ROI covers. Must match
+// the values fed to hand_tracker_calibrate_from_last_frame in main.c.
+#define CALIB_X_PCT 0.35f
+#define CALIB_Y_PCT 0.30f
+#define CALIB_W_PCT 0.30f
+#define CALIB_H_PCT 0.40f
+
+static void draw_calibration_overlay(Renderer *r, int countdown, bool armed) {
+    // Dim the whole game area (leave camera panel visible)
+    SDL_SetRenderDrawColor(r->renderer, 0, 0, 0, 170);
+    SDL_Rect dim = {0, 0, COURT_X + COURT_WIDTH + 20, GAME_HEIGHT};
+    SDL_RenderFillRect(r->renderer, &dim);
+
+    // Target rectangle inside the camera preview
+    SDL_Rect target = {
+        CAM_X + (int)(CAM_W * CALIB_X_PCT),
+        CAM_Y + (int)(CAM_H * CALIB_Y_PCT),
+        (int)(CAM_W * CALIB_W_PCT),
+        (int)(CAM_H * CALIB_H_PCT),
+    };
+    SDL_Color box_color = armed ? color_rgba(255, 208, 92, 255) : color_rgba(41, 247, 154, 255);
+    SDL_SetRenderDrawColor(r->renderer, box_color.r, box_color.g, box_color.b, box_color.a);
+    for (int i = 0; i < 3; i++) {
+        SDL_Rect t = {target.x - i, target.y - i, target.w + 2 * i, target.h + 2 * i};
+        SDL_RenderDrawRect(r->renderer, &t);
+    }
+
+    // Instruction panel centered on court
+    SDL_Rect panel = {GAME_WIDTH / 2 - 300, 140, 600, 200};
+    draw_panel(r->renderer, panel, color_rgba(18, 26, 40, 235),
+               color_rgba(255, 208, 92, 80));
+
+    draw_text_centered(r->renderer, r->ui_font_bold, "CALIBRATION",
+                       (SDL_Rect){panel.x, panel.y + 18, panel.w, 40},
+                       color_rgba(255, 208, 92, 255));
+
+    if (armed) {
+        char cd[32];
+        int secs = (countdown + 59) / 60;
+        snprintf(cd, sizeof(cd), "Capturing in %d...", secs);
+        draw_text_centered(r->renderer, r->ui_font_bold, cd,
+                           (SDL_Rect){panel.x, panel.y + 70, panel.w, 40},
+                           color_rgba(247, 250, 255, 255));
+        draw_text_centered(r->renderer, r->ui_font,
+                           "Hold your hand steady inside the box",
+                           (SDL_Rect){panel.x, panel.y + 118, panel.w, 28},
+                           color_rgba(179, 193, 219, 255));
+    } else {
+        draw_text_centered(r->renderer, r->ui_font,
+                           "Place your open hand inside the green box",
+                           (SDL_Rect){panel.x, panel.y + 70, panel.w, 28},
+                           color_rgba(247, 250, 255, 255));
+        draw_text_centered(r->renderer, r->ui_font,
+                           "ENTER: capture   ESC: cancel",
+                           (SDL_Rect){panel.x, panel.y + 108, panel.w, 28},
+                           color_rgba(179, 193, 219, 255));
+    }
+    draw_text_centered(r->renderer, r->ui_font,
+                       "Saved to ~/.hand_tennis/calib.json",
+                       (SDL_Rect){panel.x, panel.y + panel.h - 30, panel.w, 22},
+                       color_rgba(120, 150, 190, 200));
+}
+
+void rendering_draw_game(Renderer *r, GameState *state, const char *difficulty_name, HandTracker *tracker, bool calib_mode, int calib_countdown) {
     rendering_clear(r);
     draw_gradient_background(r);
 
@@ -543,6 +606,10 @@ void rendering_draw_game(Renderer *r, GameState *state, const char *difficulty_n
         draw_text_centered(r->renderer, r->ui_font, "Press SPACE to restart",
                            (SDL_Rect){GAME_WIDTH/2 - 200, GAME_HEIGHT/2 + 20, 400, 44},
                            color_rgba(179, 193, 219, 255));
+    }
+
+    if (calib_mode) {
+        draw_calibration_overlay(r, calib_countdown, calib_countdown > 0);
     }
 
     SDL_RenderPresent(r->renderer);

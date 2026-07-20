@@ -303,6 +303,51 @@ bool hand_tracker_load_calibration(HandTracker *tracker) {
     return true;
 }
 
+bool hand_tracker_calibrate_from_last_frame(HandTracker *t,
+                                            float x_pct, float y_pct,
+                                            float w_pct, float h_pct) {
+    if (!t || t->ycrcb.empty()) return false;
+
+    int x = (int)(x_pct * t->frame_width);
+    int y = (int)(y_pct * t->frame_height);
+    int w = (int)(w_pct * t->frame_width);
+    int h = (int)(h_pct * t->frame_height);
+
+    cv::Rect roi(x, y, w, h);
+    roi &= cv::Rect(0, 0, t->ycrcb.cols, t->ycrcb.rows);
+    if (roi.area() < 100) return false;
+
+    cv::Mat patch = t->ycrcb(roi).clone().reshape(1, roi.area());
+    patch.convertTo(patch, CV_32F);
+
+    double sum[3] = {0.0, 0.0, 0.0};
+    double sum2[3] = {0.0, 0.0, 0.0};
+    int n = patch.rows;
+    for (int i = 0; i < n; ++i) {
+        for (int c = 0; c < 3; ++c) {
+            double v = patch.at<float>(i, c);
+            sum[c]  += v;
+            sum2[c] += v * v;
+        }
+    }
+    for (int c = 0; c < 3; ++c) {
+        double mu    = sum[c] / n;
+        double var   = sum2[c] / n - mu * mu;
+        double sigma = std::sqrt(std::max(var, 1.0));
+        t->adaptive_low[c]  = std::max(0.0,   mu - 3.0 * sigma);
+        t->adaptive_high[c] = std::min(255.0, mu + 3.0 * sigma);
+    }
+    t->adaptive_ready = true;
+    std::printf("[calib] captured ROI %dx%d: Y[%.0f-%.0f] Cr[%.0f-%.0f] Cb[%.0f-%.0f]\n",
+                w, h,
+                t->adaptive_low[0], t->adaptive_high[0],
+                t->adaptive_low[1], t->adaptive_high[1],
+                t->adaptive_low[2], t->adaptive_high[2]);
+
+    hand_tracker_save_calibration(t);
+    return true;
+}
+
 bool hand_tracker_save_calibration(HandTracker *tracker) {
     if (!tracker || !tracker->adaptive_ready) return false;
     Calibration c = {

@@ -34,6 +34,13 @@ bool hand_tracker_load_calibration(HandTracker *tracker);
 // Save current adaptive YCrCb bounds to disk. No-op if calibration is not ready.
 bool hand_tracker_save_calibration(HandTracker *tracker);
 
+// Sample a rectangular ROI of the most recent camera frame (coords in 0..1 of
+// the frame) and derive fresh adaptive YCrCb bounds. Persists to disk on
+// success. Used by the in-game calibration screen.
+bool hand_tracker_calibrate_from_last_frame(HandTracker *tracker,
+                                            float x_pct, float y_pct,
+                                            float w_pct, float h_pct);
+
 // Release all resources.
 void hand_tracker_cleanup(HandTracker *tracker);
 

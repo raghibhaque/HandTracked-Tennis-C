@@ -57,6 +57,18 @@ struct HandTracker {
     bool net_loaded = false;
     int  net_input_size = 640;
 
+    // Tier 1b: MediaPipe-style hand-landmark model.
+    // 21 landmarks in a 224x224 crop around the palm bbox. When loaded, the
+    // landmark centroid overrides the coarse bbox center and enables pinch
+    // gesture detection (thumb tip vs index tip).
+    cv::dnn::Net landmark_net;
+    bool landmark_loaded = false;
+    int  landmark_input_size = 224;
+    std::vector<cv::Point2f> landmarks;   // 21 points in frame pixel coords
+    bool  landmarks_valid = false;
+    bool  pinching = false;
+    float pinch_ratio = 1.0f;             // 0.0 = fully pinched, 1.0+ = open
+
     // Tier 2: haar face cascade (used only in color fallback path).
     cv::CascadeClassifier face_cascade;
     bool face_loaded = false;
@@ -237,6 +249,38 @@ HandTracker* hand_tracker_init(SDL_Renderer *renderer) {
         if (!tracker->net_loaded) {
             std::printf("DNN palm model not found — using color fallback pipeline.\n");
             std::printf("  Place YOLOv8n-hand ONNX at 'models/palm.onnx' to enable DNN mode.\n");
+        }
+    }
+
+    // Tier 1b: try loading MediaPipe hand-landmark ONNX. Path lookup order:
+    //   $HAND_TENNIS_LANDMARK_MODEL, ./models/hand_landmarks.onnx
+    // Optional — palm detector alone still works without it.
+    {
+        std::vector<std::string> candidates;
+        if (const char *env = std::getenv("HAND_TENNIS_LANDMARK_MODEL")) {
+            candidates.emplace_back(env);
+        }
+        candidates.emplace_back("models/hand_landmarks.onnx");
+        candidates.emplace_back("hand_landmarks.onnx");
+
+        for (const auto &path : candidates) {
+            try {
+                cv::dnn::Net n = cv::dnn::readNetFromONNX(path);
+                if (!n.empty()) {
+                    tracker->landmark_net = n;
+                    tracker->landmark_net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+                    tracker->landmark_net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+                    tracker->landmark_loaded = true;
+                    std::printf("Hand-landmark model loaded: %s\n", path.c_str());
+                    break;
+                }
+            } catch (const cv::Exception &) {
+                // Try next candidate silently.
+            }
+        }
+        if (!tracker->landmark_loaded) {
+            std::printf("Hand-landmark model not found — palm bbox center only.\n");
+            std::printf("  Place MediaPipe hand-landmark ONNX at 'models/hand_landmarks.onnx' to enable pinch gesture.\n");
         }
     }
 
@@ -513,6 +557,72 @@ static bool dnn_detect_palm(HandTracker *t,
 
 // Compute palm center + inscribed radius inside a bbox, using the skin mask
 // as the palm silhouette. Falls back to bbox center if the mask is empty.
+// Run the hand-landmark model on a square crop around the palm bbox. On success
+// fills t->landmarks (frame-pixel coords), sets landmarks_valid, and computes
+// pinch state (thumb tip 4 vs index tip 8, normalized by wrist-to-mid-mcp).
+static bool run_landmark_net(HandTracker *t, const cv::Rect &palm_bbox) {
+    if (!t->landmark_loaded || t->frame.empty()) return false;
+
+    // Expand palm bbox to a square with 40% margin for finger reach
+    int side = std::max(palm_bbox.width, palm_bbox.height);
+    int pad  = static_cast<int>(side * 0.4f);
+    int cx   = palm_bbox.x + palm_bbox.width  / 2;
+    int cy   = palm_bbox.y + palm_bbox.height / 2;
+    int half = side / 2 + pad;
+
+    cv::Rect crop(cx - half, cy - half, 2 * half, 2 * half);
+    crop &= cv::Rect(0, 0, t->frame.cols, t->frame.rows);
+    if (crop.area() < 100) return false;
+
+    cv::Mat patch;
+    cv::resize(t->frame(crop), patch,
+               cv::Size(t->landmark_input_size, t->landmark_input_size));
+
+    cv::Mat blob = cv::dnn::blobFromImage(patch, 1.0 / 255.0,
+                                          cv::Size(t->landmark_input_size, t->landmark_input_size),
+                                          cv::Scalar(), /*swapRB=*/true, /*crop=*/false);
+    t->landmark_net.setInput(blob);
+
+    cv::Mat out;
+    try {
+        out = t->landmark_net.forward();
+    } catch (const cv::Exception &) {
+        return false;
+    }
+
+    // Find a 63-element tensor slice (21 landmarks × xyz). MediaPipe hand
+    // landmark models expose this as their primary output.
+    if (out.total() < 63) return false;
+    cv::Mat flat = out.reshape(1, 1);
+    const float *data = flat.ptr<float>(0);
+
+    t->landmarks.resize(21);
+    float scale = static_cast<float>(t->landmark_input_size);
+    for (int i = 0; i < 21; ++i) {
+        float nx = data[i * 3 + 0] / scale;
+        float ny = data[i * 3 + 1] / scale;
+        t->landmarks[i].x = crop.x + nx * crop.width;
+        t->landmarks[i].y = crop.y + ny * crop.height;
+    }
+    t->landmarks_valid = true;
+
+    // Pinch: distance(thumb tip=4, index tip=8) / distance(wrist=0, middle_mcp=9)
+    auto d = [&](int a, int b) {
+        float dx = t->landmarks[a].x - t->landmarks[b].x;
+        float dy = t->landmarks[a].y - t->landmarks[b].y;
+        return std::sqrt(dx * dx + dy * dy);
+    };
+    float span = d(0, 9);
+    if (span > 1.0f) {
+        t->pinch_ratio = d(4, 8) / span;
+        t->pinching = t->pinch_ratio < 0.4f;
+    } else {
+        t->pinch_ratio = 1.0f;
+        t->pinching = false;
+    }
+    return true;
+}
+
 static void palm_center_from_bbox(HandTracker *t, const cv::Rect &bbox,
                                   cv::Point2f &palm_center, float &palm_radius) {
     cv::Rect safe = bbox & cv::Rect(0, 0, t->skin_mask.cols, t->skin_mask.rows);
@@ -767,6 +877,13 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
         if (detected) {
             palm_center_from_bbox(tracker, dnn_bbox, palm_center, palm_radius);
 
+            // Refine center + compute pinch with landmark model if loaded.
+            tracker->landmarks_valid = false;
+            if (tracker->landmark_loaded && run_landmark_net(tracker, dnn_bbox)) {
+                // Landmark 9 = middle-finger MCP — stable hand centroid.
+                palm_center = tracker->landmarks[9];
+            }
+
             if (palm_radius < MIN_PALM_RADIUS_PX) {
                 detected = false;
             }
@@ -778,6 +895,8 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
                                  * MAX_JUMP_MULT;
                 if (dist_px > max_jump) detected = false;
             }
+        } else {
+            tracker->landmarks_valid = false;
         }
     }
 
@@ -961,8 +1080,26 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
                        cv::Scalar(0, 255, 0), 2);
             cv::circle(preview_frame, palm_center, 4,
                        cv::Scalar(0, 255, 255), -1);
-            char buf[64];
-            if (tracker->net_loaded) {
+
+            // Draw 21 landmarks + thumb-index pinch link when available.
+            if (tracker->landmarks_valid && tracker->landmarks.size() >= 21) {
+                for (const auto &lm : tracker->landmarks) {
+                    cv::circle(preview_frame, lm, 3,
+                               cv::Scalar(255, 200, 0), -1);
+                }
+                cv::Scalar link = tracker->pinching
+                    ? cv::Scalar(0, 200, 255)   // pinch: warm orange
+                    : cv::Scalar(200, 200, 200);
+                cv::line(preview_frame, tracker->landmarks[4],
+                         tracker->landmarks[8], link, 2, cv::LINE_AA);
+            }
+
+            char buf[96];
+            if (tracker->landmark_loaded && tracker->landmarks_valid) {
+                std::snprintf(buf, sizeof(buf), "Palm+LM  pinch %.2f%s",
+                              tracker->pinch_ratio,
+                              tracker->pinching ? "  [PINCH]" : "");
+            } else if (tracker->net_loaded) {
                 std::snprintf(buf, sizeof(buf), "Palm locked  DNN %.2f", dnn_conf);
             } else {
                 std::snprintf(buf, sizeof(buf), "Palm locked  COLOR%s",
@@ -991,6 +1128,14 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
 
 SDL_Texture* hand_tracker_get_preview_texture(HandTracker *tracker) {
     return tracker ? tracker->preview_texture : nullptr;
+}
+
+bool hand_tracker_is_pinching(HandTracker *tracker) {
+    return tracker && tracker->landmarks_valid && tracker->pinching;
+}
+
+bool hand_tracker_has_landmarks(HandTracker *tracker) {
+    return tracker && tracker->landmark_loaded;
 }
 
 void hand_tracker_cleanup(HandTracker *tracker) {

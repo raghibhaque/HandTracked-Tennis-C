@@ -41,6 +41,13 @@ bool hand_tracker_calibrate_from_last_frame(HandTracker *tracker,
                                             float x_pct, float y_pct,
                                             float w_pct, float h_pct);
 
+// True while the hand-landmark model is active and thumb tip / index tip are
+// close enough to register as a pinch gesture. Requires hand_landmarks.onnx.
+bool hand_tracker_is_pinching(HandTracker *tracker);
+
+// True if the optional MediaPipe-style landmark model is currently loaded.
+bool hand_tracker_has_landmarks(HandTracker *tracker);
+
 // Release all resources.
 void hand_tracker_cleanup(HandTracker *tracker);
 

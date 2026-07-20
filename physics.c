@@ -57,11 +57,15 @@ void physics_update_ball(GameState *state) {
     // Ball exits right = opponent missed = player scores.
     if (ball->x < COURT_X - 50) {
         state->opponent_score++;
+        if (state->rally_count > state->rally_best) state->rally_best = state->rally_count;
+        state->rally_count = 0;
         game_reset_ball(state);
         return;
     }
     if (ball->x > COURT_X + COURT_WIDTH + 50) {
         state->player_score++;
+        if (state->rally_count > state->rally_best) state->rally_best = state->rally_count;
+        state->rally_count = 0;
         game_reset_ball(state);
         return;
     }
@@ -80,10 +84,18 @@ void physics_check_paddle_collisions(GameState *state, Particle *particles, int 
         // Add spin based on paddle velocity
         ball->vy += state->player.vy * 0.5f;
 
-        // Increase speed slightly, clamped to MAX_BALL_SPEED
+        // Rally combo — every hit advances the meter, milestone flashes HUD
+        state->rally_count++;
+        if (state->rally_count > 0 && state->rally_count % 5 == 0) {
+            state->rally_flash = 30;
+        }
+
+        // Increase speed slightly, clamped to MAX_BALL_SPEED. Rally adds bonus.
+        float rally_bonus = 1.0f + (state->rally_count * 0.01f);
+        if (rally_bonus > 1.15f) rally_bonus = 1.15f;
         float speed = sqrtf(ball->vx * ball->vx + ball->vy * ball->vy);
         if (speed > 0.0f && speed < MAX_BALL_SPEED) {
-            float new_speed = speed * 1.05f;
+            float new_speed = speed * 1.05f * rally_bonus;
             if (new_speed > MAX_BALL_SPEED) new_speed = MAX_BALL_SPEED;
             ball->vx = ball->vx * new_speed / speed;
             ball->vy = ball->vy * new_speed / speed;
@@ -115,10 +127,18 @@ void physics_check_paddle_collisions(GameState *state, Particle *particles, int 
         // Add spin based on paddle velocity
         ball->vy += state->opponent.vy * 0.5f;
 
-        // Increase speed slightly, clamped to MAX_BALL_SPEED
+        // Rally combo — opponent return also counts
+        state->rally_count++;
+        if (state->rally_count > 0 && state->rally_count % 5 == 0) {
+            state->rally_flash = 30;
+        }
+
+        // Increase speed slightly, clamped to MAX_BALL_SPEED. Rally adds bonus.
+        float rally_bonus = 1.0f + (state->rally_count * 0.01f);
+        if (rally_bonus > 1.15f) rally_bonus = 1.15f;
         float speed = sqrtf(ball->vx * ball->vx + ball->vy * ball->vy);
         if (speed > 0.0f && speed < MAX_BALL_SPEED) {
-            float new_speed = speed * 1.05f;
+            float new_speed = speed * 1.05f * rally_bonus;
             if (new_speed > MAX_BALL_SPEED) new_speed = MAX_BALL_SPEED;
             ball->vx = ball->vx * new_speed / speed;
             ball->vy = ball->vy * new_speed / speed;

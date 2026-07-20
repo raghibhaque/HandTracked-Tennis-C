@@ -32,6 +32,10 @@
 #define DIFF_Y     (SCORE_Y + SCORE_H + 10)
 #define DIFF_H     44
 
+// Rally combo panel
+#define RALLY_Y    (DIFF_Y + DIFF_H + 10)
+#define RALLY_H    68
+
 typedef struct {
     SDL_Window *window;
     SDL_Renderer *renderer;
@@ -401,6 +405,36 @@ void rendering_draw_game(Renderer *r, GameState *state, const char *difficulty_n
     snprintf(diff_fps, sizeof(diff_fps), "%s  |  %.0f FPS", difficulty_name, state->fps);
     draw_text_centered(r->renderer, r->ui_font, diff_fps, diff_panel,
                        color_rgba(170, 188, 215, 255));
+
+    // ── Rally combo panel ────────────────────────────────────────────
+    SDL_Rect rally_panel = {CAM_X, RALLY_Y, CAM_W, RALLY_H};
+    bool flashing = state->rally_flash > 0;
+    SDL_Color rally_fill = flashing
+        ? color_rgba(60, 40, 12, 255)
+        : color_rgba(12, 20, 34, 220);
+    SDL_Color rally_outline = flashing
+        ? color_rgba(255, 208, 92, 220)
+        : color_rgba(255, 208, 92, 60);
+    draw_panel(r->renderer, rally_panel, rally_fill, rally_outline);
+
+    draw_text_centered(r->renderer, r->ui_font, "RALLY",
+                       (SDL_Rect){CAM_X, RALLY_Y + 6, CAM_W, 20},
+                       color_rgba(120, 150, 190, 200));
+
+    char rally_text[32];
+    snprintf(rally_text, sizeof(rally_text), "%d", state->rally_count);
+    SDL_Color rally_num = flashing
+        ? color_rgba(255, 236, 160, 255)
+        : color_rgba(255, 208, 92, 255);
+    draw_text_centered(r->renderer, r->ui_font_bold, rally_text,
+                       (SDL_Rect){CAM_X, RALLY_Y + 24, CAM_W / 2, 34},
+                       rally_num);
+
+    char best_text[32];
+    snprintf(best_text, sizeof(best_text), "BEST %d", state->rally_best);
+    draw_text_centered(r->renderer, r->ui_font, best_text,
+                       (SDL_Rect){CAM_X + CAM_W / 2, RALLY_Y + 30, CAM_W / 2, 22},
+                       color_rgba(170, 188, 215, 220));
 
     // ── Game over overlay ─────────────────────────────────────────────
     if (state->game_over) {

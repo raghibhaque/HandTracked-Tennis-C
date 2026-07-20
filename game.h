@@ -86,6 +86,11 @@ typedef struct {
     // Game timing
     int frame_count;
     float fps;
+
+    // Rally combo tracking
+    int rally_count;      // Consecutive hits this rally
+    int rally_best;       // Best rally this session
+    int rally_flash;      // Countdown frames for HUD flash after milestone
 } GameState;
 
 // Function declarations

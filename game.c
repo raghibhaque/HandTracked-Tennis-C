@@ -21,6 +21,9 @@ GameState* game_init(Difficulty difficulty) {
     state->frame_count = 0;
     state->fps = 0.0f;
     state->particle_count = 0;
+    state->rally_count = 0;
+    state->rally_best = 0;
+    state->rally_flash = 0;
     
     // Initialize player paddle (left side)
     state->player.x = COURT_X + 10;
@@ -68,6 +71,7 @@ void game_update(GameState *state, Hand *hand) {
     if (state->game_over) return;
     
     state->frame_count++;
+    if (state->rally_flash > 0) state->rally_flash--;
     
     // Update hand tracking with exponential smoothing
     if (hand->detected) {

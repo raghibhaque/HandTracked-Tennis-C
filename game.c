@@ -7,6 +7,8 @@
 void physics_update_ball(GameState *state);
 void physics_check_paddle_collisions(GameState *state, Particle *particles, int *particle_count);
 void physics_update_particles(Particle *particles, int *particle_count);
+void physics_update_extra_balls(GameState *state);
+void physics_update_powerups(GameState *state);
 void ai_opponent_update(GameState *state, int frame_count);
 
 GameState* game_init(Difficulty difficulty) {
@@ -24,6 +26,17 @@ GameState* game_init(Difficulty difficulty) {
     state->rally_count = 0;
     state->rally_best = 0;
     state->rally_flash = 0;
+
+    // Power-ups
+    for (int i = 0; i < MAX_POWERUPS; i++) {
+        state->powerups[i].active = false;
+        state->powerups[i].radius = POWERUP_RADIUS;
+        state->powerups[i].spin = 0;
+    }
+    state->powerup_spawn_cooldown = POWERUP_SPAWN_COOLDOWN;
+    state->extra_ball_count = 0;
+    state->big_paddle_frames = 0;
+    state->slow_mo_frames = 0;
     
     // Initialize player paddle (left side)
     state->player.x = COURT_X + 10;
@@ -65,6 +78,11 @@ void game_reset_ball(GameState *state) {
     ball->vx = direction * BALL_SPEED_X + (rand() % 4 - 2);
     ball->vy = (rand() % 6 - 3);
     ball->radius = BALL_RADIUS;
+
+    // Drop extra balls and active effects on point end
+    state->extra_ball_count = 0;
+    state->big_paddle_frames = 0;
+    state->slow_mo_frames = 0;
 }
 
 void game_update(GameState *state, Hand *hand) {
@@ -72,6 +90,14 @@ void game_update(GameState *state, Hand *hand) {
     
     state->frame_count++;
     if (state->rally_flash > 0) state->rally_flash--;
+
+    // Big-paddle sizing (paddle grows while effect active)
+    int target_h = (state->big_paddle_frames > 0)
+        ? (int)(PADDLE_HEIGHT * BIG_PADDLE_SCALE)
+        : PADDLE_HEIGHT;
+    state->player.height = target_h;
+    if (state->big_paddle_frames > 0) state->big_paddle_frames--;
+    if (state->slow_mo_frames > 0) state->slow_mo_frames--;
     
     // Update hand tracking with exponential smoothing
     if (hand->detected) {
@@ -87,14 +113,17 @@ void game_update(GameState *state, Hand *hand) {
         state->hand.tracking_confidence = (state->hand.tracking_confidence - 1) < 0 ? 0 : state->hand.tracking_confidence - 1;
     }
 
+    // Effective paddle max Y accounts for current player.height (big-paddle grows it)
+    float player_max_y = COURT_Y + COURT_HEIGHT - state->player.height;
+
     // Map normalized camera position (0-100) to game coordinates.
     if (state->hand.tracking_confidence > 30) {
         // Center paddle on the detected hand position
-        float game_y = COURT_Y + (state->hand.smoothed_y / 100.0f) * COURT_HEIGHT - PADDLE_HEIGHT / 2.0f;
+        float game_y = COURT_Y + (state->hand.smoothed_y / 100.0f) * COURT_HEIGHT - state->player.height / 2.0f;
 
         // Clamp to valid range
         if (game_y < PADDLE_MIN_Y) game_y = PADDLE_MIN_Y;
-        if (game_y > PADDLE_MAX_Y) game_y = PADDLE_MAX_Y;
+        if (game_y > player_max_y) game_y = player_max_y;
 
         float old_y = state->player.y;
         state->player.y = game_y;
@@ -103,10 +132,10 @@ void game_update(GameState *state, Hand *hand) {
         // No hand detected, apply damping
         state->player.vy *= 0.9f;
     }
-    
+
     // Clamp player paddle to bounds
     if (state->player.y < PADDLE_MIN_Y) state->player.y = PADDLE_MIN_Y;
-    if (state->player.y > PADDLE_MAX_Y) state->player.y = PADDLE_MAX_Y;
+    if (state->player.y > player_max_y) state->player.y = player_max_y;
     
     // Update ball physics
     physics_update_ball(state);
@@ -122,6 +151,12 @@ void game_update(GameState *state, Hand *hand) {
     if (state->opponent.y < PADDLE_MIN_Y) state->opponent.y = PADDLE_MIN_Y;
     if (state->opponent.y > PADDLE_MAX_Y) state->opponent.y = PADDLE_MAX_Y;
     
+    // Extra multi-balls
+    physics_update_extra_balls(state);
+
+    // Power-up spawn + pickup
+    physics_update_powerups(state);
+
     // Update particles
     physics_update_particles(state->particles, &state->particle_count);
     

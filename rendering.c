@@ -36,6 +36,10 @@
 #define RALLY_Y    (DIFF_Y + DIFF_H + 10)
 #define RALLY_H    68
 
+// Power-up effect strip
+#define FX_Y       (RALLY_Y + RALLY_H + 10)
+#define FX_H       46
+
 typedef struct {
     SDL_Window *window;
     SDL_Renderer *renderer;
@@ -311,6 +315,45 @@ void rendering_draw_game(Renderer *r, GameState *state, const char *difficulty_n
                      color_rgba(255, 232, 120, 255),
                      color_rgba(255, 232, 120, 50));
 
+    // Extra multi-balls (ORANGE tint)
+    for (int i = 0; i < state->extra_ball_count; i++) {
+        Ball *eb = &state->extra_balls[i];
+        draw_glow_circle(r, (int)eb->x, (int)eb->y, eb->radius,
+                         color_rgba(255, 178, 92, 255),
+                         color_rgba(255, 178, 92, 40));
+    }
+
+    // Power-ups (color by type, pulsating outline)
+    for (int i = 0; i < MAX_POWERUPS; i++) {
+        PowerUp *p = &state->powerups[i];
+        if (!p->active) continue;
+        SDL_Color core, glow;
+        const char *label = "?";
+        switch (p->type) {
+            case POWERUP_MULTIBALL:
+                core = color_rgba(255, 178, 92, 255);
+                glow = color_rgba(255, 178, 92, 60);
+                label = "x3";
+                break;
+            case POWERUP_BIG_PADDLE:
+                core = color_rgba(41, 247, 154, 255);
+                glow = color_rgba(41, 247, 154, 60);
+                label = "BIG";
+                break;
+            case POWERUP_SLOW_MO:
+                core = color_rgba(140, 180, 255, 255);
+                glow = color_rgba(140, 180, 255, 60);
+                label = "SLO";
+                break;
+            default: core = glow = color_rgba(200, 200, 200, 255); break;
+        }
+        int pulse = 4 + (p->spin / 6) % 6;
+        draw_glow_circle(r, (int)p->x, (int)p->y, p->radius + pulse, core, glow);
+        draw_text_centered(r->renderer, r->ui_font, label,
+                           (SDL_Rect){(int)p->x - 20, (int)p->y - 10, 40, 20},
+                           color_rgba(15, 20, 30, 255));
+    }
+
     // Particles
     for (int i = 0; i < state->particle_count; i++) {
         Particle *p = &state->particles[i];
@@ -435,6 +478,27 @@ void rendering_draw_game(Renderer *r, GameState *state, const char *difficulty_n
     draw_text_centered(r->renderer, r->ui_font, best_text,
                        (SDL_Rect){CAM_X + CAM_W / 2, RALLY_Y + 30, CAM_W / 2, 22},
                        color_rgba(170, 188, 215, 220));
+
+    // ── Active power-up strip ────────────────────────────────────────
+    SDL_Rect fx_panel = {CAM_X, FX_Y, CAM_W, FX_H};
+    draw_panel(r->renderer, fx_panel, color_rgba(12, 20, 34, 200),
+               color_rgba(255, 255, 255, 18));
+
+    int chip_w = (CAM_W - 24) / 3;
+    struct { const char *label; int frames; int total; SDL_Color color; } fx[] = {
+        {"BIG",  state->big_paddle_frames, BIG_PADDLE_FRAMES, color_rgba(41, 247, 154, 255)},
+        {"SLO",  state->slow_mo_frames,    SLOW_MO_FRAMES,    color_rgba(140, 180, 255, 255)},
+        {"BALL", state->extra_ball_count,  MAX_EXTRA_BALLS,   color_rgba(255, 178, 92, 255)},
+    };
+    for (int i = 0; i < 3; i++) {
+        SDL_Rect chip = {CAM_X + 8 + i * (chip_w + 4), FX_Y + 6, chip_w, FX_H - 12};
+        bool on = fx[i].frames > 0;
+        SDL_Color fill = on ? fx[i].color : color_rgba(30, 40, 60, 220);
+        draw_filled_rect(r->renderer, chip, fill);
+        draw_outlined_rect(r->renderer, chip, color_rgba(255, 255, 255, 40));
+        draw_text_centered(r->renderer, r->ui_font, fx[i].label, chip,
+                           on ? color_rgba(12, 20, 34, 255) : color_rgba(140, 160, 190, 220));
+    }
 
     // ── Game over overlay ─────────────────────────────────────────────
     if (state->game_over) {

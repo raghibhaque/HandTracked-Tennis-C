@@ -33,13 +33,15 @@ static bool check_ball_paddle_collision(Ball *ball, Paddle *paddle) {
 // Update ball physics
 void physics_update_ball(GameState *state) {
     Ball *ball = &state->ball;
-    
+
+    float slow = (state->slow_mo_frames > 0) ? 0.5f : 1.0f;
+
     // Apply gravity (subtle)
-    ball->vy += 0.3f;
-    
-    // Update position
-    ball->x += ball->vx;
-    ball->y += ball->vy;
+    ball->vy += 0.3f * slow;
+
+    // Update position (slow-mo scales displacement)
+    ball->x += ball->vx * slow;
+    ball->y += ball->vy * slow;
     
     // Wall collisions (top/bottom)
     if (ball->y - ball->radius <= COURT_Y) {
@@ -157,6 +159,133 @@ void physics_check_paddle_collisions(GameState *state, Particle *particles, int 
                 particles[*particle_count].lifetime = 30;
                 particles[*particle_count].max_lifetime = 30;
                 (*particle_count)++;
+            }
+        }
+    }
+}
+
+// Simulate extra multi-balls: bounce off walls + paddles, no scoring, vanish when past the court edges.
+void physics_update_extra_balls(GameState *state) {
+    float slow = (state->slow_mo_frames > 0) ? 0.5f : 1.0f;
+
+    int write = 0;
+    for (int i = 0; i < state->extra_ball_count; i++) {
+        Ball *b = &state->extra_balls[i];
+
+        b->vy += 0.3f * slow;
+        b->x  += b->vx * slow;
+        b->y  += b->vy * slow;
+
+        // Top/bottom bounce
+        if (b->y - b->radius <= COURT_Y) {
+            b->y = COURT_Y + b->radius;
+            b->vy = -b->vy * 0.95f;
+        }
+        if (b->y + b->radius >= COURT_Y + COURT_HEIGHT) {
+            b->y = COURT_Y + COURT_HEIGHT - b->radius;
+            b->vy = -b->vy * 0.95f;
+        }
+
+        // Paddle bounces (no scoring bookkeeping)
+        if (check_ball_paddle_collision(b, &state->player) && b->vx < 0) {
+            b->x = state->player.x + state->player.width + b->radius;
+            b->vx = -b->vx;
+            b->vy += state->player.vy * 0.5f;
+        }
+        if (check_ball_paddle_collision(b, &state->opponent) && b->vx > 0) {
+            b->x = state->opponent.x - b->radius;
+            b->vx = -b->vx;
+            b->vy += state->opponent.vy * 0.5f;
+        }
+
+        // Kill if it left the court
+        if (b->x < COURT_X - 50 || b->x > COURT_X + COURT_WIDTH + 50) {
+            continue;
+        }
+
+        state->extra_balls[write++] = *b;
+    }
+    state->extra_ball_count = write;
+}
+
+// Spawn a fresh power-up in mid-court
+static void spawn_powerup(GameState *state) {
+    for (int i = 0; i < MAX_POWERUPS; i++) {
+        if (!state->powerups[i].active) {
+            state->powerups[i].active = true;
+            state->powerups[i].x = COURT_X + COURT_WIDTH / 2 + (rand() % 200 - 100);
+            state->powerups[i].y = COURT_Y + 60 + (rand() % (COURT_HEIGHT - 120));
+            state->powerups[i].type = (PowerUpType)(rand() % POWERUP_TYPE_COUNT);
+            state->powerups[i].radius = POWERUP_RADIUS;
+            state->powerups[i].spin = 0;
+            return;
+        }
+    }
+}
+
+// Check circle-vs-circle overlap
+static bool ball_hits_powerup(Ball *b, PowerUp *p) {
+    float dx = b->x - p->x;
+    float dy = b->y - p->y;
+    float r = (float)(b->radius + p->radius);
+    return (dx * dx + dy * dy) <= r * r;
+}
+
+// Apply a power-up effect triggered by ball contact
+static void activate_powerup(GameState *state, PowerUp *p, Ball *trigger) {
+    switch (p->type) {
+        case POWERUP_MULTIBALL:
+            for (int k = 0; k < 2 && state->extra_ball_count < MAX_EXTRA_BALLS; k++) {
+                Ball *nb = &state->extra_balls[state->extra_ball_count++];
+                nb->x = p->x;
+                nb->y = p->y;
+                nb->radius = BALL_RADIUS;
+                float sign = (k == 0) ? 1.0f : -1.0f;
+                nb->vx = trigger->vx * (0.9f + 0.2f * ((rand() % 100) / 100.0f));
+                nb->vy = sign * (2.0f + (rand() % 40) / 10.0f);
+            }
+            break;
+        case POWERUP_BIG_PADDLE:
+            state->big_paddle_frames = BIG_PADDLE_FRAMES;
+            break;
+        case POWERUP_SLOW_MO:
+            state->slow_mo_frames = SLOW_MO_FRAMES;
+            break;
+        default:
+            break;
+    }
+}
+
+void physics_update_powerups(GameState *state) {
+    // Spawn cooldown
+    if (state->powerup_spawn_cooldown > 0) {
+        state->powerup_spawn_cooldown--;
+    } else {
+        // Count active
+        int active = 0;
+        for (int i = 0; i < MAX_POWERUPS; i++) if (state->powerups[i].active) active++;
+        if (active < MAX_POWERUPS) {
+            spawn_powerup(state);
+        }
+        state->powerup_spawn_cooldown = POWERUP_SPAWN_COOLDOWN;
+    }
+
+    // Check collision with primary + extra balls
+    for (int i = 0; i < MAX_POWERUPS; i++) {
+        PowerUp *p = &state->powerups[i];
+        if (!p->active) continue;
+        p->spin++;
+
+        if (ball_hits_powerup(&state->ball, p)) {
+            activate_powerup(state, p, &state->ball);
+            p->active = false;
+            continue;
+        }
+        for (int j = 0; j < state->extra_ball_count; j++) {
+            if (ball_hits_powerup(&state->extra_balls[j], p)) {
+                activate_powerup(state, p, &state->extra_balls[j]);
+                p->active = false;
+                break;
             }
         }
     }

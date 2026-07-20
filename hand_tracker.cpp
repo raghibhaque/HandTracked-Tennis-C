@@ -555,10 +555,16 @@ static bool dnn_detect_palm(HandTracker *t,
         return false;
     }
 
+    // Confidence threshold adapts to lock state:
+    //   - Locked and detecting: strict 0.35 (reject weak/duplicate proposals).
+    //   - Warm-up or long-lost: relaxed to 0.20 so the tracker can re-acquire
+    //     a partially occluded or oddly-oriented hand instead of sitting at
+    //     zero detections until the user waves harder.
+    float conf_th = (t->has_palm || t->lost_frames < 30) ? 0.35f : 0.20f;
     auto dets = yolov8_decode_single_class(
         output, scale, pad_x, pad_y,
         t->frame.cols, t->frame.rows,
-        /*conf_th=*/0.35f, /*iou_th=*/0.45f);
+        conf_th, /*iou_th=*/0.45f);
 
     if (dets.empty()) return false;
 
@@ -588,8 +594,6 @@ static bool dnn_detect_palm(HandTracker *t,
     return true;
 }
 
-// Compute palm center + inscribed radius inside a bbox, using the skin mask
-// as the palm silhouette. Falls back to bbox center if the mask is empty.
 // Run the hand-landmark model on a square crop around the palm bbox. On success
 // fills t->landmarks (frame-pixel coords), sets landmarks_valid, and computes
 // pinch state (thumb tip 4 vs index tip 8, normalized by wrist-to-mid-mcp).
@@ -673,6 +677,8 @@ static bool run_landmark_net(HandTracker *t, const cv::Rect &palm_bbox) {
     return true;
 }
 
+// Compute palm center + inscribed radius inside a bbox, using the skin mask
+// as the palm silhouette. Falls back to bbox center if the mask is empty.
 static void palm_center_from_bbox(HandTracker *t, const cv::Rect &bbox,
                                   cv::Point2f &palm_center, float &palm_radius) {
     cv::Rect safe = bbox & cv::Rect(0, 0, t->skin_mask.cols, t->skin_mask.rows);
@@ -1131,6 +1137,17 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
             tracker->kalman_initialized = false;
             tracker->stale_frames     = 0;
             tracker->last_moved_center = cv::Point2f(-1.0f, -1.0f);
+        }
+
+        // Prolonged loss (~10 s) with adaptive bounds active usually means the
+        // scene lighting shifted and our color model no longer matches the
+        // user's skin. Drop the adaptive bounds so subsequent frames fall back
+        // to the base Chai-Ngan bounds and re-sample from fresh data on the
+        // next lock. Cheap self-repair for lighting drift.
+        if (tracker->adaptive_ready && tracker->lost_frames > 300) {
+            tracker->adaptive_ready = false;
+            tracker->adaptive_samples = 0;
+            std::printf("[calib] adaptive bounds dropped after prolonged loss — resampling on next lock\n");
         }
     }
 

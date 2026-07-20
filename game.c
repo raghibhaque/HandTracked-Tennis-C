@@ -104,16 +104,21 @@ void game_update(GameState *state, Hand *hand) {
     if (state->big_paddle_frames > 0) state->big_paddle_frames--;
     if (state->slow_mo_frames > 0) state->slow_mo_frames--;
     
-    // Update hand tracking with exponential smoothing
+    // Update hand tracking with exponential smoothing. Confidence ramps up
+    // fast (+4/frame) so the paddle starts responding after ~5 lock frames
+    // instead of ~15, and decays gently so single dropped frames do not
+    // freeze the paddle.
     if (hand->detected) {
         state->hand.detected = true;
         state->hand.x = hand->x;
         state->hand.y = hand->y;
-        state->hand.tracking_confidence = (state->hand.tracking_confidence + 2) > 100 ? 100 : state->hand.tracking_confidence + 2;
+        state->hand.tracking_confidence = (state->hand.tracking_confidence + 4) > 100 ? 100 : state->hand.tracking_confidence + 4;
 
-        // Exponential smoothing for hand position
-        state->hand.smoothed_x = state->hand.smoothed_x * 0.8f + hand->x * 0.2f;
-        state->hand.smoothed_y = state->hand.smoothed_y * 0.8f + hand->y * 0.2f;
+        // 0.65/0.35 exponential smoothing: tight enough to feel responsive on
+        // a well-tracked hand while still absorbing single-frame jitter. The
+        // Kalman filter upstream already handles the noise floor.
+        state->hand.smoothed_x = state->hand.smoothed_x * 0.65f + hand->x * 0.35f;
+        state->hand.smoothed_y = state->hand.smoothed_y * 0.65f + hand->y * 0.35f;
     } else {
         state->hand.tracking_confidence = (state->hand.tracking_confidence - 1) < 0 ? 0 : state->hand.tracking_confidence - 1;
     }
@@ -121,8 +126,10 @@ void game_update(GameState *state, Hand *hand) {
     // Effective paddle max Y accounts for current player.height (big-paddle grows it)
     float player_max_y = COURT_Y + COURT_HEIGHT - state->player.height;
 
-    // Map normalized camera position (0-100) to game coordinates.
-    if (state->hand.tracking_confidence > 30) {
+    // Map normalized camera position (0-100) to game coordinates. Confidence
+    // gate lowered from 30 → 20 so the paddle picks up the hand a few frames
+    // sooner after cold lock, matching the faster ramp above.
+    if (state->hand.tracking_confidence > 20) {
         // Center paddle on the detected hand position
         float game_y = COURT_Y + (state->hand.smoothed_y / 100.0f) * COURT_HEIGHT - state->player.height / 2.0f;
 

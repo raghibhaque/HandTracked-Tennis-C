@@ -313,6 +313,13 @@ HandTracker* hand_tracker_init(SDL_Renderer *renderer) {
         }
         candidates.emplace_back("models/haarcascade_frontalface_default.xml");
         candidates.emplace_back("haarcascade_frontalface_default.xml");
+        // Common install locations shipped with OpenCV builds. Lets the face
+        // veto work out of the box on typical Linux / MSYS2 setups without
+        // the user having to copy the XML.
+        candidates.emplace_back("C:/msys64/ucrt64/share/opencv4/haarcascades/haarcascade_frontalface_default.xml");
+        candidates.emplace_back("C:/msys64/mingw64/share/opencv4/haarcascades/haarcascade_frontalface_default.xml");
+        candidates.emplace_back("/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml");
+        candidates.emplace_back("/usr/local/share/opencv4/haarcascades/haarcascade_frontalface_default.xml");
 
         for (const auto &path : candidates) {
             if (tracker->face_cascade.load(path)) {
@@ -320,6 +327,10 @@ HandTracker* hand_tracker_init(SDL_Renderer *renderer) {
                 std::printf("Face cascade loaded: %s\n", path.c_str());
                 break;
             }
+        }
+        if (!tracker->face_loaded) {
+            std::printf("Face cascade not found — face-veto disabled.\n");
+            std::printf("  Copy haarcascade_frontalface_default.xml to 'models/' to reject false locks on faces.\n");
         }
     }
 

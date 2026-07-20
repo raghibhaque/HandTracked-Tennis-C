@@ -783,6 +783,13 @@ static void apply_recalibrate(HandTracker *t) {
     t->stale_frames = 0;
     t->last_moved_center = cv::Point2f(-1.0f, -1.0f);
     t->recalibrate_pending = false;
+
+    // Wipe persisted YCrCb bounds so the next launch does not silently reload
+    // the stale calibration the user just discarded.
+    if (std::remove(calib_path()) == 0) {
+        std::printf("[calib] removed cached %s\n", calib_path());
+    }
+
     std::printf("Recalibration triggered — keep hand OUT of view.\n");
 }
 

@@ -57,6 +57,26 @@ void physics_update_ball(GameState *state) {
     // Player is on LEFT; opponent is on RIGHT.
     // Ball exits left  = player missed  = opponent scores.
     // Ball exits right = opponent missed = player scores.
+    // Practice-wall mode: right side acts as a solid wall, no opponent scoring.
+    if (state->mode == MODE_PRACTICE) {
+        if (ball->x + ball->radius >= COURT_X + COURT_WIDTH - 4 && ball->vx > 0) {
+            ball->x = COURT_X + COURT_WIDTH - 4 - ball->radius;
+            ball->vx = -ball->vx * 0.98f;
+            state->rally_count++;
+            if (state->rally_count > 0 && state->rally_count % 5 == 0) {
+                state->rally_flash = 30;
+            }
+        }
+        if (ball->x < COURT_X - 50) {
+            // Player missed — record rally, reset
+            if (state->rally_count > state->rally_best) state->rally_best = state->rally_count;
+            state->rally_count = 0;
+            game_reset_ball(state);
+            return;
+        }
+        return;
+    }
+
     if (ball->x < COURT_X - 50) {
         state->opponent_score++;
         if (state->rally_count > state->rally_best) state->rally_best = state->rally_count;

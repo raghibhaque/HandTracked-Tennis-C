@@ -303,12 +303,19 @@ void rendering_draw_game(Renderer *r, GameState *state, const char *difficulty_n
                    color_rgba(41, 247, 154, 255),
                    color_rgba(41, 247, 154, 40));
 
-    // Opponent paddle (right, BLUE)
-    draw_glow_rect(r,
-                   (SDL_Rect){(int)state->opponent.x, (int)state->opponent.y,
-                               state->opponent.width, state->opponent.height},
-                   color_rgba(76, 146, 255, 255),
-                   color_rgba(76, 146, 255, 40));
+    if (state->mode == MODE_VS_AI) {
+        // Opponent paddle (right, BLUE)
+        draw_glow_rect(r,
+                       (SDL_Rect){(int)state->opponent.x, (int)state->opponent.y,
+                                   state->opponent.width, state->opponent.height},
+                       color_rgba(76, 146, 255, 255),
+                       color_rgba(76, 146, 255, 40));
+    } else {
+        // Practice mode: highlight the right wall as a solid barrier
+        draw_filled_rect(r->renderer,
+                         (SDL_Rect){COURT_X + COURT_WIDTH - 8, COURT_Y, 8, COURT_HEIGHT},
+                         color_rgba(76, 146, 255, 200));
+    }
 
     // Ball (YELLOW)
     draw_glow_circle(r, (int)state->ball.x, (int)state->ball.y, state->ball.radius,
@@ -420,22 +427,33 @@ void rendering_draw_game(Renderer *r, GameState *state, const char *difficulty_n
                        color_rgba(120, 150, 190, 200));
 
     char score_text[64];
-    snprintf(score_text, sizeof(score_text), "%d  \xe2\x80\x94  %d", state->player_score, state->opponent_score);
+    if (state->mode == MODE_PRACTICE) {
+        snprintf(score_text, sizeof(score_text), "%d", state->rally_count);
+    } else {
+        snprintf(score_text, sizeof(score_text), "%d  \xe2\x80\x94  %d", state->player_score, state->opponent_score);
+    }
     draw_text_centered(r->renderer, r->ui_font_bold, score_text,
                        (SDL_Rect){CAM_X, SCORE_Y + 32, CAM_W, 52},
                        color_rgba(247, 250, 255, 255));
 
-    // YOU / CPU labels aligned under score numbers
+    // YOU / CPU (or PRACTICE label)
     int half = CAM_W / 2;
-    draw_text_centered(r->renderer, r->ui_font, "YOU",
-                       (SDL_Rect){CAM_X, SCORE_Y + 82, half, 28},
-                       color_rgba(41, 247, 154, 255));
-    draw_text_centered(r->renderer, r->ui_font, "CPU",
-                       (SDL_Rect){CAM_X + half, SCORE_Y + 82, half, 28},
-                       color_rgba(76, 146, 255, 255));
+    if (state->mode == MODE_PRACTICE) {
+        draw_text_centered(r->renderer, r->ui_font, "PRACTICE WALL",
+                           (SDL_Rect){CAM_X, SCORE_Y + 82, CAM_W, 28},
+                           color_rgba(255, 208, 92, 255));
+    } else {
+        draw_text_centered(r->renderer, r->ui_font, "YOU",
+                           (SDL_Rect){CAM_X, SCORE_Y + 82, half, 28},
+                           color_rgba(41, 247, 154, 255));
+        draw_text_centered(r->renderer, r->ui_font, "CPU",
+                           (SDL_Rect){CAM_X + half, SCORE_Y + 82, half, 28},
+                           color_rgba(76, 146, 255, 255));
+    }
 
-    // Win target
-    draw_text_centered(r->renderer, r->ui_font, "First to 11",
+    // Win target / mode hint
+    draw_text_centered(r->renderer, r->ui_font,
+                       state->mode == MODE_PRACTICE ? "Endless rally" : "First to 11",
                        (SDL_Rect){CAM_X, SCORE_Y + SCORE_H - 26, CAM_W, 22},
                        color_rgba(100, 130, 170, 180));
 

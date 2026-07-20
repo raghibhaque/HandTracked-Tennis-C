@@ -12,9 +12,14 @@ void physics_update_powerups(GameState *state);
 void ai_opponent_update(GameState *state, int frame_count);
 
 GameState* game_init(Difficulty difficulty) {
+    return game_init_mode(difficulty, MODE_VS_AI);
+}
+
+GameState* game_init_mode(Difficulty difficulty, GameMode mode) {
     GameState *state = (GameState *)malloc(sizeof(GameState));
-    
+
     state->difficulty = difficulty;
+    state->mode = mode;
     state->player_score = 0;
     state->opponent_score = 0;
     state->max_score = 11;  // First to 11
@@ -143,13 +148,13 @@ void game_update(GameState *state, Hand *hand) {
     // Check collisions
     physics_check_paddle_collisions(state, state->particles, &state->particle_count);
     
-    // Update opponent AI
-    ai_opponent_update(state, state->frame_count);
-    
-    // Apply opponent paddle velocity and clamp
-    state->opponent.y += state->opponent.vy;
-    if (state->opponent.y < PADDLE_MIN_Y) state->opponent.y = PADDLE_MIN_Y;
-    if (state->opponent.y > PADDLE_MAX_Y) state->opponent.y = PADDLE_MAX_Y;
+    // Update opponent AI (only in vs-AI mode)
+    if (state->mode == MODE_VS_AI) {
+        ai_opponent_update(state, state->frame_count);
+        state->opponent.y += state->opponent.vy;
+        if (state->opponent.y < PADDLE_MIN_Y) state->opponent.y = PADDLE_MIN_Y;
+        if (state->opponent.y > PADDLE_MAX_Y) state->opponent.y = PADDLE_MAX_Y;
+    }
     
     // Extra multi-balls
     physics_update_extra_balls(state);
@@ -160,14 +165,16 @@ void game_update(GameState *state, Hand *hand) {
     // Update particles
     physics_update_particles(state->particles, &state->particle_count);
     
-    // Check win condition
-    if (state->player_score >= state->max_score) {
-        state->game_over = true;
-        state->game_won = true;
-    }
-    if (state->opponent_score >= state->max_score) {
-        state->game_over = true;
-        state->game_won = false;
+    // Check win condition (only in vs-AI mode)
+    if (state->mode == MODE_VS_AI) {
+        if (state->player_score >= state->max_score) {
+            state->game_over = true;
+            state->game_won = true;
+        }
+        if (state->opponent_score >= state->max_score) {
+            state->game_over = true;
+            state->game_won = false;
+        }
     }
 }
 

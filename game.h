@@ -33,6 +33,12 @@ typedef enum {
     DIFFICULTY_EXTREME = 3
 } Difficulty;
 
+// Game modes
+typedef enum {
+    MODE_VS_AI = 0,
+    MODE_PRACTICE = 1
+} GameMode;
+
 // Power-up kinds
 typedef enum {
     POWERUP_MULTIBALL = 0,
@@ -101,6 +107,7 @@ typedef struct {
     int max_score;
     
     Difficulty difficulty;
+    GameMode mode;
     bool game_over;
     bool game_won;  // true if player won, false if opponent won
     
@@ -128,6 +135,7 @@ typedef struct {
 
 // Function declarations
 GameState* game_init(Difficulty difficulty);
+GameState* game_init_mode(Difficulty difficulty, GameMode mode);
 void game_update(GameState *state, Hand *hand);
 void game_reset_ball(GameState *state);
 void game_cleanup(GameState *state);

@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <string.h>
 #include <time.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
@@ -22,7 +23,7 @@ const char* ai_get_difficulty_name(Difficulty difficulty);
 
 void print_usage(void) {
     printf("\n=== Hand Tennis Game ===\n");
-    printf("Usage: hand_tennis [difficulty] [fps]\n\n");
+    printf("Usage: hand_tennis [difficulty] [fps] [mode]\n\n");
     printf("Difficulty levels:\n");
     printf("  0 = Easy (slow opponent, forgiving)\n");
     printf("  1 = Medium (balanced gameplay)\n");
@@ -31,6 +32,9 @@ void print_usage(void) {
     printf("FPS caps:\n");
     printf("  30 = lower CPU usage\n");
     printf("  60 = smoother motion (default)\n\n");
+    printf("Modes:\n");
+    printf("  ai       = vs AI (default)\n");
+    printf("  practice = practice wall (endless rally)\n\n");
     printf("Controls:\n");
     printf("  - Position your hand in front of the camera\n");
     printf("  - Move your hand up/down to move the paddle\n");
@@ -268,14 +272,20 @@ int main(int argc, char *argv[]) {
     
     print_usage();
     
-    // Parse difficulty from command line
+    // Parse difficulty / fps / mode from command line
     Difficulty difficulty = DIFFICULTY_MEDIUM;
     int frame_cap = 60;
+    GameMode mode = MODE_VS_AI;
     if (argc > 1) {
         difficulty = parse_difficulty(argv[1]);
     }
     if (argc > 2) {
         frame_cap = parse_frame_cap(argv[2]);
+    }
+    if (argc > 3) {
+        if (strcmp(argv[3], "practice") == 0 || strcmp(argv[3], "wall") == 0) {
+            mode = MODE_PRACTICE;
+        }
     }
     
     printf("Starting Hand Tennis - Difficulty: %s\n\n", 
@@ -332,7 +342,7 @@ int main(int argc, char *argv[]) {
     camera_prompt_cleanup(camera_prompt);
 
     printf("[4/4] Initializing game state...\n");
-    GameState *game_state = game_init(difficulty);
+    GameState *game_state = game_init_mode(difficulty, mode);
     if (!game_state) {
         fprintf(stderr, "Failed to initialize game\n");
         hand_tracker_cleanup(hand_tracker);
@@ -391,9 +401,10 @@ int main(int argc, char *argv[]) {
                     if (event.key.keysym.sym == SDLK_ESCAPE) {
                         running = false;
                     } else if (event.key.keysym.sym == SDLK_SPACE && game_state->game_over) {
-                        // Restart game
+                        // Restart game (preserve current mode)
+                        GameMode current_mode = game_state->mode;
                         game_cleanup(game_state);
-                        game_state = game_init(difficulty);
+                        game_state = game_init_mode(difficulty, current_mode);
                     } else if (event.key.keysym.sym == SDLK_r) {
                         hand_tracker_recalibrate(hand_tracker);
                     }

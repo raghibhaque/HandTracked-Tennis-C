@@ -743,6 +743,11 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
         return false;
     }
 
+    // Selfie flip: users expect their preview to move like a mirror. Applied
+    // in-place so every downstream stage (skin mask, DNN, motion, landmarks,
+    // preview) works in a consistent flipped frame.
+    cv::flip(tracker->frame, tracker->frame, 1);
+
     if (tracker->recalibrate_pending) {
         apply_recalibrate(tracker);
     }

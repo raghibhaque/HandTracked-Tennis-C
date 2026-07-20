@@ -629,15 +629,23 @@ static bool run_landmark_net(HandTracker *t, const cv::Rect &palm_bbox) {
     cv::Mat flat = out.reshape(1, 1);
     const float *data = flat.ptr<float>(0);
 
+    // Auto-detect output space: some ONNX exports return coords in pixels of
+    // the input tile (0..input_size), others normalize to 0..1. Sniff the
+    // magnitude of a handful of components to decide.
+    float max_abs = 0.0f;
+    for (int i = 0; i < 63; ++i) {
+        float v = std::fabs(data[i]);
+        if (v > max_abs) max_abs = v;
+    }
+    float scale = (max_abs > 2.0f) ? static_cast<float>(t->landmark_input_size) : 1.0f;
+
     t->landmarks.resize(21);
-    float scale = static_cast<float>(t->landmark_input_size);
     for (int i = 0; i < 21; ++i) {
         float nx = data[i * 3 + 0] / scale;
         float ny = data[i * 3 + 1] / scale;
         t->landmarks[i].x = crop.x + nx * crop.width;
         t->landmarks[i].y = crop.y + ny * crop.height;
     }
-    t->landmarks_valid = true;
 
     // Pinch: distance(thumb tip=4, index tip=8) / distance(wrist=0, middle_mcp=9)
     auto d = [&](int a, int b) {
@@ -646,13 +654,22 @@ static bool run_landmark_net(HandTracker *t, const cv::Rect &palm_bbox) {
         return std::sqrt(dx * dx + dy * dy);
     };
     float span = d(0, 9);
-    if (span > 1.0f) {
-        t->pinch_ratio = d(4, 8) / span;
-        t->pinching = t->pinch_ratio < 0.4f;
-    } else {
+
+    // Sanity: wrist-to-MCP must be a substantial fraction of the crop.
+    // Broken output tensors produce degenerate spans; reject silently rather
+    // than let a garbage centroid override the DNN bbox center.
+    float min_span = crop.width * 0.05f;
+    float max_span = crop.width * 1.2f;
+    if (span < min_span || span > max_span) {
+        t->landmarks_valid = false;
         t->pinch_ratio = 1.0f;
         t->pinching = false;
+        return false;
     }
+
+    t->landmarks_valid = true;
+    t->pinch_ratio = d(4, 8) / span;
+    t->pinching = t->pinch_ratio < 0.4f;
     return true;
 }
 
@@ -918,8 +935,14 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
             // Refine center + compute pinch with landmark model if loaded.
             tracker->landmarks_valid = false;
             if (tracker->landmark_loaded && run_landmark_net(tracker, dnn_bbox)) {
-                // Landmark 9 = middle-finger MCP — stable hand centroid.
-                palm_center = tracker->landmarks[9];
+                // Landmark 9 = middle-finger MCP. Blend 65% landmark, 35%
+                // bbox center so a single-frame landmark jitter cannot yank
+                // the paddle across the screen. Bbox center from the DNN is
+                // stable but coarse; landmark is precise but occasionally
+                // twitchy on partial occlusion — averaging kills both flaws.
+                const cv::Point2f lm = tracker->landmarks[9];
+                palm_center.x = lm.x * 0.65f + palm_center.x * 0.35f;
+                palm_center.y = lm.y * 0.65f + palm_center.y * 0.35f;
             }
 
             if (palm_radius < MIN_PALM_RADIUS_PX) {

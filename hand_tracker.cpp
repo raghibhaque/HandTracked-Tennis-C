@@ -119,9 +119,15 @@ static constexpr float  MAX_JUMP_MULT      = 6.0f;
 static constexpr int    CALIB_FRAMES       = 45;
 static constexpr double CALIB_HIT_RATIO    = 0.70;
 
-// Stale-lock escape.
-static constexpr int    STALE_MAX_FRAMES   = 45;
-static constexpr float  STALE_MOVE_EPS_PX  = 4.0f;
+// Stale-lock escape. Two thresholds:
+//   - Before adaptive skin locks (warm-up), trust nothing that sits still for
+//     ~1.5 s — could be a lamp or curtain false positive.
+//   - After adaptive skin is locked, the color model is user-specific and a
+//     held-still hand is far more plausible than a false positive. Relax to
+//     ~5 s so players can rest between rallies without dropping the lock.
+static constexpr int    STALE_MAX_FRAMES        = 45;
+static constexpr int    STALE_MAX_FRAMES_LOCKED = 150;
+static constexpr float  STALE_MOVE_EPS_PX       = 4.0f;
 
 static bool open_camera_index(HandTracker *tracker, int camera_index) {
     if (!tracker->capture.open(camera_index, cv::CAP_ANY)) {
@@ -172,8 +178,12 @@ static void init_kalman(HandTracker *t, const cv::Point2f &seed) {
         0, 0, 0, 1);
 
     cv::setIdentity(t->kf.measurementMatrix);
-    cv::setIdentity(t->kf.processNoiseCov,     cv::Scalar::all(1e-2));
-    cv::setIdentity(t->kf.measurementNoiseCov, cv::Scalar::all(1e-1));
+    // Process noise raised from 1e-2 → 5e-2: the palm can accelerate fast, and
+    // over-smoothing manifests as visible paddle lag during quick swipes.
+    // Measurement noise slightly raised (1e-1 → 2e-1) to reject single-frame
+    // DNN outliers while still trusting the trend.
+    cv::setIdentity(t->kf.processNoiseCov,     cv::Scalar::all(5e-2));
+    cv::setIdentity(t->kf.measurementNoiseCov, cv::Scalar::all(2e-1));
     cv::setIdentity(t->kf.errorCovPost,        cv::Scalar::all(1.0f));
 
     t->kf.statePost.at<float>(0) = seed.x;
@@ -1019,7 +1029,10 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
             }
         }
 
-        if (tracker->stale_frames > STALE_MAX_FRAMES) {
+        int stale_limit = tracker->adaptive_ready
+            ? STALE_MAX_FRAMES_LOCKED
+            : STALE_MAX_FRAMES;
+        if (tracker->stale_frames > stale_limit) {
             tracker->has_palm         = false;
             tracker->kalman_initialized = false;
             tracker->stale_frames     = 0;

@@ -371,29 +371,52 @@ bool hand_tracker_calibrate_from_last_frame(HandTracker *t,
     roi &= cv::Rect(0, 0, t->ycrcb.cols, t->ycrcb.rows);
     if (roi.area() < 100) return false;
 
-    cv::Mat patch = t->ycrcb(roi).clone().reshape(1, roi.area());
-    patch.convertTo(patch, CV_32F);
+    // Build a base-skin mask over the ROI so we sample only pixels that already
+    // look plausibly skin-colored by Chai-Ngan bounds. This rejects the desk /
+    // wall pixels that inevitably sneak into any rectangular hand box and keeps
+    // adaptive bounds from being pulled toward background statistics.
+    cv::Mat roi_ycrcb = t->ycrcb(roi);
+    cv::Mat base_mask;
+    cv::inRange(roi_ycrcb,
+                cv::Scalar(0,   SKIN_CR_MIN, SKIN_CB_MIN),
+                cv::Scalar(255, SKIN_CR_MAX, SKIN_CB_MAX),
+                base_mask);
 
-    double sum[3] = {0.0, 0.0, 0.0};
+    int base_hits = cv::countNonZero(base_mask);
+    bool use_mask = base_hits >= 400;  // require enough skin pixels to trust the mask
+
+    double sum[3]  = {0.0, 0.0, 0.0};
     double sum2[3] = {0.0, 0.0, 0.0};
-    int n = patch.rows;
-    for (int i = 0; i < n; ++i) {
-        for (int c = 0; c < 3; ++c) {
-            double v = patch.at<float>(i, c);
-            sum[c]  += v;
-            sum2[c] += v * v;
+    long   n       = 0;
+
+    for (int row = 0; row < roi_ycrcb.rows; ++row) {
+        const cv::Vec3b *pix = roi_ycrcb.ptr<cv::Vec3b>(row);
+        const uchar     *msk = use_mask ? base_mask.ptr<uchar>(row) : nullptr;
+        for (int col = 0; col < roi_ycrcb.cols; ++col) {
+            if (msk && !msk[col]) continue;
+            for (int c = 0; c < 3; ++c) {
+                double v = pix[col][c];
+                sum[c]  += v;
+                sum2[c] += v * v;
+            }
+            n++;
         }
     }
+    if (n < 100) return false;
+
+    // Tighter sigma than the online adaptive pipeline: a single captured frame
+    // has far fewer samples than a locked-and-rolling capture, so ±2.5σ is a
+    // safer envelope than ±3σ.
     for (int c = 0; c < 3; ++c) {
         double mu    = sum[c] / n;
         double var   = sum2[c] / n - mu * mu;
         double sigma = std::sqrt(std::max(var, 1.0));
-        t->adaptive_low[c]  = std::max(0.0,   mu - 3.0 * sigma);
-        t->adaptive_high[c] = std::min(255.0, mu + 3.0 * sigma);
+        t->adaptive_low[c]  = std::max(0.0,   mu - 2.5 * sigma);
+        t->adaptive_high[c] = std::min(255.0, mu + 2.5 * sigma);
     }
     t->adaptive_ready = true;
-    std::printf("[calib] captured ROI %dx%d: Y[%.0f-%.0f] Cr[%.0f-%.0f] Cb[%.0f-%.0f]\n",
-                w, h,
+    std::printf("[calib] captured ROI %dx%d, %ld px%s: Y[%.0f-%.0f] Cr[%.0f-%.0f] Cb[%.0f-%.0f]\n",
+                w, h, n, use_mask ? " (skin-filtered)" : "",
                 t->adaptive_low[0], t->adaptive_high[0],
                 t->adaptive_low[1], t->adaptive_high[1],
                 t->adaptive_low[2], t->adaptive_high[2]);

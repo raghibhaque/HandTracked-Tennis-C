@@ -17,6 +17,7 @@ GameState* game_init(Difficulty difficulty) {
 
 GameState* game_init_mode(Difficulty difficulty, GameMode mode) {
     GameState *state = (GameState *)malloc(sizeof(GameState));
+    if (!state) return NULL;
 
     state->difficulty = difficulty;
     state->mode = mode;
@@ -109,17 +110,25 @@ void game_update(GameState *state, Hand *hand) {
     // instead of ~15, and decays gently so single dropped frames do not
     // freeze the paddle.
     if (hand->detected) {
+        // Cold-start seed: on the first detected frame after a loss, snap the
+        // smoothed position to the raw reading. Without this the paddle drifts
+        // in from the (50,50) default over ~15 frames every time tracking
+        // re-acquires, which reads as visible startup lag.
+        bool cold_start = !state->hand.detected;
         state->hand.detected = true;
         state->hand.x = hand->x;
         state->hand.y = hand->y;
         state->hand.tracking_confidence = (state->hand.tracking_confidence + 4) > 100 ? 100 : state->hand.tracking_confidence + 4;
 
-        // 0.65/0.35 exponential smoothing: tight enough to feel responsive on
-        // a well-tracked hand while still absorbing single-frame jitter. The
-        // Kalman filter upstream already handles the noise floor.
-        state->hand.smoothed_x = state->hand.smoothed_x * 0.65f + hand->x * 0.35f;
-        state->hand.smoothed_y = state->hand.smoothed_y * 0.65f + hand->y * 0.35f;
+        if (cold_start) {
+            state->hand.smoothed_x = hand->x;
+            state->hand.smoothed_y = hand->y;
+        } else {
+            state->hand.smoothed_x = state->hand.smoothed_x * 0.65f + hand->x * 0.35f;
+            state->hand.smoothed_y = state->hand.smoothed_y * 0.65f + hand->y * 0.35f;
+        }
     } else {
+        state->hand.detected = false;
         state->hand.tracking_confidence = (state->hand.tracking_confidence - 1) < 0 ? 0 : state->hand.tracking_confidence - 1;
     }
 

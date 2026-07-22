@@ -10,8 +10,10 @@
 #include <SDL2/SDL.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <thread>
@@ -88,8 +90,16 @@ struct HandTracker {
     int  adaptive_samples = 0;
     static constexpr int ADAPTIVE_TARGET_SAMPLES = 1500;
 
-    // Recalibrate request from main thread.
-    bool recalibrate_pending = false;
+    // Recalibrate request from main thread. Atomic because SDL event loop
+    // and detect loop can run on separate threads in future refactor.
+    std::atomic<bool> recalibrate_pending{false};
+
+    // Consecutive camera read failures — triggers reopen after N.
+    int consecutive_read_failures = 0;
+    int camera_index_used = -1;
+
+    // Reusable preview buffer — avoids allocating ~1MB per frame.
+    cv::Mat preview_frame;
 };
 
 // YCrCb skin bounds — Chai & Ngan (1999).
@@ -137,6 +147,7 @@ static bool open_camera_index(HandTracker *tracker, int camera_index) {
     if (!tracker->capture.open(camera_index, cv::CAP_ANY)) {
         return false;
     }
+    tracker->camera_index_used = camera_index;
 
     tracker->capture.set(cv::CAP_PROP_FRAME_WIDTH, 640);
     tracker->capture.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
@@ -832,8 +843,25 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
     if (!tracker || !tracker->capture.isOpened()) return false;
 
     if (!tracker->capture.read(tracker->frame) || tracker->frame.empty()) {
+        // Hot-unplug / driver hiccup recovery. Camera drivers occasionally
+        // drop frames or return empty Mats on power events; on any UVC device
+        // a full release + reopen is the only reliable way back. Try after
+        // 30 straight failures (~1s at 30fps) so single-frame stutters do not
+        // trigger unnecessary reopen cycles.
+        tracker->consecutive_read_failures++;
+        if (tracker->consecutive_read_failures >= 30 && tracker->camera_index_used >= 0) {
+            std::fprintf(stderr, "Camera read failed %d frames in a row; reopening index %d\n",
+                         tracker->consecutive_read_failures, tracker->camera_index_used);
+            int idx = tracker->camera_index_used;
+            tracker->capture.release();
+            if (open_camera_index(tracker, idx)) {
+                std::fprintf(stderr, "  Camera reopened.\n");
+            }
+            tracker->consecutive_read_failures = 0;
+        }
         return false;
     }
+    tracker->consecutive_read_failures = 0;
 
     // Selfie flip: users expect their preview to move like a mirror. Applied
     // in-place so every downstream stage (skin mask, DNN, motion, landmarks,
@@ -986,14 +1014,24 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
             // Refine center + compute pinch with landmark model if loaded.
             tracker->landmarks_valid = false;
             if (tracker->landmark_loaded && run_landmark_net(tracker, dnn_bbox)) {
-                // Landmark 9 = middle-finger MCP. Blend 65% landmark, 35%
-                // bbox center so a single-frame landmark jitter cannot yank
-                // the paddle across the screen. Bbox center from the DNN is
-                // stable but coarse; landmark is precise but occasionally
-                // twitchy on partial occlusion — averaging kills both flaws.
+                // Landmark 9 = middle-finger MCP. Reject the landmark override
+                // when it lands outside a modestly-expanded bbox — that means
+                // the tensor decode is off (wrong output layout or crop miss).
                 const cv::Point2f lm = tracker->landmarks[9];
-                palm_center.x = lm.x * 0.65f + palm_center.x * 0.35f;
-                palm_center.y = lm.y * 0.65f + palm_center.y * 0.35f;
+                cv::Rect sanity(dnn_bbox.x - dnn_bbox.width / 4,
+                                dnn_bbox.y - dnn_bbox.height / 4,
+                                dnn_bbox.width + dnn_bbox.width / 2,
+                                dnn_bbox.height + dnn_bbox.height / 2);
+                if (sanity.contains(cv::Point(static_cast<int>(lm.x),
+                                              static_cast<int>(lm.y)))) {
+                    // Blend 65% landmark, 35% bbox — landmark precise but
+                    // occasionally twitchy on partial occlusion, bbox stable
+                    // but coarse. Averaging kills both flaws.
+                    palm_center.x = lm.x * 0.65f + palm_center.x * 0.35f;
+                    palm_center.y = lm.y * 0.65f + palm_center.y * 0.35f;
+                } else {
+                    tracker->landmarks_valid = false;
+                }
             }
 
             if (palm_radius < MIN_PALM_RADIUS_PX) {
@@ -1156,6 +1194,13 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
             tracker->lost_frames <= GRACE_FRAMES &&
             predicted.x >= 0.0f && predicted.y >= 0.0f) {
 
+            // Decay Kalman velocity each coast frame so the paddle glides to a
+            // stop instead of flying off screen when the hand vanishes mid-swipe.
+            // Without this a fast swipe → occlusion sends the paddle across the
+            // court at last-observed velocity for GRACE_FRAMES frames.
+            tracker->kf.statePost.at<float>(2) *= 0.7f;
+            tracker->kf.statePost.at<float>(3) *= 0.7f;
+
             float px = std::max(0.0f, std::min(static_cast<float>(W - 1), predicted.x));
             float py = std::max(0.0f, std::min(static_cast<float>(H - 1), predicted.y));
 
@@ -1188,7 +1233,9 @@ bool hand_tracker_detect(HandTracker *tracker, float *x, float *y) {
 
     // 8. Preview — palm circle only, no finger/arm annotation.
     if (tracker->preview_texture) {
-        cv::Mat preview_frame = tracker->frame.clone();
+        // Reuse a single Mat instead of allocating ~1MB per frame.
+        tracker->frame.copyTo(tracker->preview_frame);
+        cv::Mat &preview_frame = tracker->preview_frame;
         if (!tracker->calib_ready) {
             char buf[96];
             std::snprintf(buf, sizeof(buf),

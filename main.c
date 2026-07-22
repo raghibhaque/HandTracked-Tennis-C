@@ -29,9 +29,11 @@ void print_usage(void) {
     printf("  1 = Medium (balanced gameplay)\n");
     printf("  2 = Hard (fast, predictive)\n");
     printf("  3 = Extreme (godlike AI)\n\n");
-    printf("FPS caps:\n");
-    printf("  30 = lower CPU usage\n");
-    printf("  60 = smoother motion (default)\n\n");
+    printf("FPS caps (30-240):\n");
+    printf("  30  = lower CPU usage\n");
+    printf("  60  = default\n");
+    printf("  144 = high-refresh gameplay\n");
+    printf("  240 = max\n\n");
     printf("Modes:\n");
     printf("  ai       = vs AI (default)\n");
     printf("  practice = practice wall (endless rally)\n\n");
@@ -252,8 +254,8 @@ Difficulty parse_difficulty(const char *arg) {
 
 static int parse_frame_cap(const char *arg) {
     int cap = atoi(arg);
-    if (cap != 30 && cap != 60) {
-        fprintf(stderr, "Invalid FPS cap: %d. Using 60 FPS.\n", cap);
+    if (cap < 30 || cap > 240) {
+        fprintf(stderr, "Invalid FPS cap: %d. Must be 30-240. Using 60 FPS.\n", cap);
         return 60;
     }
     return cap;
@@ -357,7 +359,10 @@ int main(int argc, char *argv[]) {
     printf("Starting game loop...\n");
     printf("      ✓ Ready to play!\n\n");
     
-    // Main game loop
+    // Main game loop: render at frame_cap Hz (up to 240), step physics at a
+    // fixed 60 Hz via accumulator. Decoupling keeps ball speed / gravity /
+    // AI reaction timing identical at 60, 100, 144, 240 fps — otherwise
+    // per-frame constants (vy += 0.3, etc.) would silently rescale the game.
     bool running = true;
     bool calib_mode = false;
     int calib_countdown = 0;
@@ -365,16 +370,20 @@ int main(int argc, char *argv[]) {
     uint32_t frame_time = 0;
     uint32_t frame_count_fps = 0;
     uint32_t fps_timer = 0;
-    uint32_t target_frame_ms = (frame_cap == 30) ? 33u : 16u;
-    
+    // Use float ms for precise sub-ms budget at 144/240 Hz where integer
+    // truncation (7ms vs 6.94ms at 144 Hz) drifts frame pacing.
+    float target_frame_ms_f = 1000.0f / (float)frame_cap;
+    const uint32_t FIXED_STEP_MS = 16;  // 60 Hz physics tick
+    uint32_t physics_accumulator = 0;
+
     while (running) {
         uint32_t current_time = SDL_GetTicks();
         frame_time = current_time - last_time;
         last_time = current_time;
-        
-        // Cap at either 30 FPS or 60 FPS.
-        if (frame_time < target_frame_ms) {
-            SDL_Delay(target_frame_ms - frame_time);
+
+        // Cap frame rate to target Hz.
+        if ((float)frame_time < target_frame_ms_f) {
+            SDL_Delay((uint32_t)(target_frame_ms_f - (float)frame_time));
         }
         
         // Update FPS counter
@@ -440,7 +449,18 @@ int main(int argc, char *argv[]) {
 
         // Freeze game state while calibrating so the ball does not slip away
         if (!calib_mode) {
-            game_update(game_state, &hand_input);
+            // Fixed-timestep step. Accumulate real elapsed ms and drain in
+            // 16 ms chunks so physics tick rate is independent of render Hz.
+            // Cap accumulator at 5 steps (~83 ms) to avoid spiral-of-death
+            // after a long stall (window drag, alt-tab).
+            physics_accumulator += frame_time;
+            int steps = 0;
+            while (physics_accumulator >= FIXED_STEP_MS && steps < 5) {
+                game_update(game_state, &hand_input);
+                physics_accumulator -= FIXED_STEP_MS;
+                steps++;
+            }
+            if (steps >= 5) physics_accumulator = 0;
         }
         
         // Render
@@ -453,8 +473,10 @@ int main(int argc, char *argv[]) {
     
     printf("\n[Cleanup] Shutting down...\n");
     game_cleanup(game_state);
-    rendering_cleanup(renderer);
+    // Order matters: tracker owns SDL_Texture whose parent is renderer.
+    // Destroying renderer first invalidates the texture handle.
     hand_tracker_cleanup(hand_tracker);
+    rendering_cleanup(renderer);
     TTF_Quit();
     SDL_Quit();
     printf("✓ Goodbye!\n");
